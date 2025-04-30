@@ -1,0 +1,5 @@
+streamlit
+pandas
+# requests # No longer needed for manual paste method
+beautifulsoup4
+lxml 
