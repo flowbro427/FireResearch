@@ -43,6 +43,10 @@ def init_session_state():
     # Initialize boolean fields
     if "is_digital" not in st.session_state:
         st.session_state["is_digital"] = False # Initialize as False
+        
+    # Initialize tags list
+    if 'tags_list' not in st.session_state:
+        st.session_state['tags_list'] = [] # Initialize as empty list
 
 init_session_state()
 
@@ -503,7 +507,7 @@ def parse_everbee_text_content(page_text):
 
     # --- Parse Tags Section (Simpler Sequential Approach) --- 
     tags_list = [] 
-    notes_tags_section = []
+    # notes_tags_section = [] # REMOVED - Don't add tags to notes anymore
     try:
         # Find start and end markers for the tags block
         block_start_index = -1
@@ -529,7 +533,7 @@ def parse_everbee_text_content(page_text):
             num_tag_lines = len(tag_block_lines)
             i = 0
             while i < num_tag_lines:
-                print(f"\\nDEBUG TAGS: Processing line index {i} within tag block. Content: '{tag_block_lines[i]}'") # DEBUG ADDED
+                # print(f"\\nDEBUG TAGS: Processing line index {i} within tag block. Content: '{tag_block_lines[i]}'") # DEBUG REMOVED
                 # --- Check for 4/5 Line Pattern --- 
                 current_tag = {}
                 lines_consumed = 0
@@ -541,9 +545,9 @@ def parse_everbee_text_content(page_text):
                     if line1 and re.search(r'[a-zA-Z]', line1) and not re.match(r'^(?:[\\d,\\.]+|High|Medium|Low)$', line1, re.IGNORECASE):
                         current_tag['name'] = line1
                         lines_consumed += 1
-                        print(f"DEBUG TAGS: -> Matched Name: '{line1}'") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Matched Name: '{line1}'") # DEBUG REMOVED
                     else:
-                        print(f"DEBUG TAGS: -> Did NOT match Name pattern. Advancing i by 1.") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Did NOT match Name pattern. Advancing i by 1.") # DEBUG REMOVED
                         i += 1; continue # Not a valid name start
                 else: break # End of block
 
@@ -552,15 +556,16 @@ def parse_everbee_text_content(page_text):
                 if vol_idx < num_tag_lines:
                     line2 = tag_block_lines[vol_idx].strip()
                     vol_match = re.match(r'^([\d,]+)$', line2) # Removed '|' from original regex
+                    # SIMPLIFIED CONDITION:
                     if vol_match: # Removed 'and vol_match.group(1)'
                         current_tag['volume'] = vol_match.group(1)
                         lines_consumed += 1
-                        print(f"DEBUG TAGS: -> Matched Volume: '{line2}'") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Matched Volume: '{line2}'") # DEBUG REMOVED
                     else:
-                        print(f"DEBUG TAGS: -> Did NOT match Volume pattern for line '{line2}'. Resetting and advancing i by 1.") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Did NOT match Volume pattern for line '{line2}'. Resetting and advancing i by 1.") # DEBUG REMOVED
                         i += 1; continue # Pattern broken
                 else:
-                    print(f"DEBUG TAGS: -> End of block reached while looking for Volume. Breaking.") # DEBUG ADDED
+                    # print(f"DEBUG TAGS: -> End of block reached while looking for Volume. Breaking.") # DEBUG REMOVED
                     break # End of block
                 
                 # 3. Competition
@@ -568,15 +573,16 @@ def parse_everbee_text_content(page_text):
                 if comp_idx < num_tag_lines:
                     line3 = tag_block_lines[comp_idx].strip()
                     comp_match = re.match(r'^([\d,]+)$', line3) # Removed '|' from original regex
+                    # SIMPLIFIED CONDITION:
                     if comp_match: # Removed 'and comp_match.group(1)'
                         current_tag['competition'] = comp_match.group(1)
                         lines_consumed += 1
-                        print(f"DEBUG TAGS: -> Matched Competition: '{line3}'") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Matched Competition: '{line3}'") # DEBUG REMOVED
                     else:
-                        print(f"DEBUG TAGS: -> Did NOT match Competition pattern for line '{line3}'. Resetting and advancing i by 1.") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Did NOT match Competition pattern for line '{line3}'. Resetting and advancing i by 1.") # DEBUG REMOVED
                         i += 1; continue # Pattern broken
                 else:
-                    print(f"DEBUG TAGS: -> End of block reached while looking for Competition. Breaking.") # DEBUG ADDED
+                    # print(f"DEBUG TAGS: -> End of block reached while looking for Competition. Breaking.") # DEBUG REMOVED
                     break # End of block
 
                 # 4. Level (Optional) OR Score
@@ -589,12 +595,12 @@ def parse_everbee_text_content(page_text):
                         current_tag['level'] = level_match.group(1)
                         lines_consumed += 1
                         level_found = True
-                        print(f"DEBUG TAGS: -> Matched Level: '{line4}'") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Matched Level: '{line4}'") # DEBUG REMOVED
                     else:
                         current_tag['level'] = 'N/A' # Default if line 4 isn't level
-                        print(f"DEBUG TAGS: -> Did NOT match Level pattern for line '{line4}'. Assuming N/A.") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Did NOT match Level pattern for line '{line4}'. Assuming N/A.") # DEBUG REMOVED
                 else:
-                    print(f"DEBUG TAGS: -> End of block reached while looking for Level. Breaking.") # DEBUG ADDED
+                    # print(f"DEBUG TAGS: -> End of block reached while looking for Level. Breaking.") # DEBUG REMOVED
                     break # End of block
                 
                 # 5. Score (Required - check at index + lines_consumed)
@@ -603,41 +609,41 @@ def parse_everbee_text_content(page_text):
                     line5 = tag_block_lines[score_line_index].strip()
                     # FIX: Removed extra single quote from regex end
                     score_match = re.match(r'^([\d,\.]+)$', line5)
+                    # SIMPLIFIED CONDITION:
                     if score_match: # Removed 'and score_match.group(1)'
                         current_tag['score'] = score_match.group(1)
                         lines_consumed += 1 # Consume score line
-                        print(f"DEBUG TAGS: -> Matched Score: '{line5}'") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: -> Matched Score: '{line5}'") # DEBUG REMOVED
                         # Successfully parsed a tag!
                         tags_list.append(current_tag)
-                        print(f"DEBUG TAGS: *** Successfully added tag: {current_tag}. Advancing i by {lines_consumed}. ***") # DEBUG ADDED
+                        # print(f"DEBUG TAGS: *** Successfully added tag: {current_tag}. Advancing i by {lines_consumed}. ***") # DEBUG REMOVED
                         i += lines_consumed # Advance main index
                         continue # Go to next potential tag start
                     else: # Score not found where expected
-                         print(f"DEBUG TAGS: -> Did NOT match Score pattern for line '{line5}'. Resetting and advancing i by 1.") # DEBUG ADDED
+                         # print(f"DEBUG TAGS: -> Did NOT match Score pattern for line '{line5}'. Resetting and advancing i by 1.") # DEBUG REMOVED
                          i += 1; continue # Pattern broken
                 else:
-                    print(f"DEBUG TAGS: -> End of block reached while looking for Score. Breaking.") # DEBUG ADDED
+                    # print(f"DEBUG TAGS: -> End of block reached while looking for Score. Breaking.") # DEBUG REMOVED
                     break # End of block
                 
                 # If we somehow fall through without continuing/breaking (shouldn't happen)
-                print(f"DEBUG TAGS: -> Unexpected fallthrough. Advancing i by 1.") # DEBUG ADDED
+                # print(f"DEBUG TAGS: -> Unexpected fallthrough. Advancing i by 1.") # DEBUG REMOVED
                 i+= 1
 
-            # --- Assign to parsed_data and generate notes --- 
+            # --- Assign to parsed_data --- 
             if tags_list:
-                parsed_data['tags_list'] = tags_list
-                notes_tags_section.append("\n--- Everbee Tags ---")
-                for tag_dict in tags_list:
-                    level_str = tag_dict.get('level', 'N/A')
-                    notes_tags_section.append(f"- Tag: {tag_dict.get('name', '?')}, Vol: {tag_dict.get('volume', '?')}, Comp: {tag_dict.get('competition', '?')}, Level: {level_str}, Score: {tag_dict.get('score', '?')}")
+                parsed_data['tags_list'] = tags_list # Ensure the list of dicts is assigned
+                # REMOVED tag formatting for notes:
+                # notes_tags_section.append("\n--- Everbee Tags ---")
+                # for tag_dict in tags_list:
+                #     level_str = tag_dict.get('level', 'N/A')
+                #     notes_tags_section.append(f"- Tag: {tag_dict.get('name', '?')}, Vol: {tag_dict.get('volume', '?')}, Comp: {tag_dict.get('competition', '?')}, Level: {level_str}, Score: {tag_dict.get('score', '?')}")
         else:
-             # print("DEBUG (Tags): Could not find valid block for Tags.") # DEBUG REMOVED
              pass # Just means no tags block found
 
     except Exception as e:
         # print(f"DEBUG TAGS: EXCEPTION during parsing: {e}") # DEBUG REMOVED
-        # print(f"DEBUG (Tags): EXCEPTION CAUGHT during Block Extraction tag processing: {e}") # DEBUG REMOVED
-        notes_tags_section.append(f"\n--- Everbee Tags ---\nError parsing tags: {e}")
+        notes.append(f"\n--- Everbee Tags ---\nError parsing tags: {e}") # Keep error reporting in notes
 
     # --- Parse More Details Section (using full lines list) --- 
     try:
@@ -704,13 +710,13 @@ def parse_everbee_text_content(page_text):
     except Exception as e:
         notes.append(f"\n--- Everbee More Details ---\nError parsing details: {e}")
 
-    parsed_data['notes'] = "\n".join(notes)
+    parsed_data['notes'] = "\n".join(notes) # Assign notes without tags section
 
-    # --- Add Print for Final Data --- 
-    print("\nDEBUG: Final parsed_data after multi-row selection and full parse:")
-    import pprint
-    pprint.pprint(parsed_data)
-    print("---\n")
+    # REMOVED final debug print
+    # print("\nDEBUG: Final parsed_data after multi-row selection and full parse:")
+    # import pprint
+    # pprint.pprint(parsed_data)
+    # print("---\n")
 
     return parsed_data
 
@@ -994,9 +1000,9 @@ if st.button("Parse Everbee Text"):
             try:
                 parsed_data = parse_everbee_text_content(st.session_state.pasted_everbee_text)
 
-                # --- Check if parsing succeeded before updating state ---
+                # --- Check if parsing succeeded before updating state --- 
                 if parsed_data:
-                    # --- Update ALL relevant session state fields from parsed_data ---
+                    # --- Update ALL relevant session state fields from parsed_data --- 
                     st.session_state.product_title = parsed_data.get('product_title', st.session_state.product_title)
                     st.session_state.shop_name = parsed_data.get('shop_name', st.session_state.shop_name)
                     st.session_state.price_str = parsed_data.get('price_str_display', str(parsed_data.get('price', ''))) # Use display string or format float
@@ -1013,23 +1019,20 @@ if st.button("Parse Everbee Text"):
                     st.session_state.review_ratio = parsed_data.get('review_ratio', st.session_state.review_ratio)
                     st.session_state.monthly_reviews_str = str(parsed_data.get('monthly_reviews', ''))
                     st.session_state.listing_type = parsed_data.get('listing_type', st.session_state.listing_type)
+                    
+                    # Store the parsed tags list in session state
+                    st.session_state.tags_list = parsed_data.get('tags_list', [])
 
                     # --- Append Everbee notes to existing notes --- 
                     existing_notes = st.session_state.notes
-                    # Remove previous Everbee sections first
+                    # Remove previous Everbee sections first (including Tags now)
                     notes_clean = re.sub(r'\n*--- Everbee Tags ---(.*?)(\n*---|$)', '\n\n', existing_notes, flags=re.DOTALL|re.IGNORECASE).strip()
                     notes_clean = re.sub(r'\n*--- Everbee More Details ---(.*?)(\n*---|$)', '\n\n', notes_clean, flags=re.DOTALL|re.IGNORECASE).strip()
                     notes_clean = re.sub(r'\n*--- Everbee Other Data ---(.*?)(\n*---|$)', '\n\n', notes_clean, flags=re.DOTALL|re.IGNORECASE).strip()
 
                     notes_output = [notes_clean] if notes_clean else []
-
-                    # Reconstruct Tags section directly from parsed_data['tags_list']
-                    if parsed_data.get('tags_list'):
-                        tags_section = ["--- Everbee Tags ---"]
-                        for tag_dict in parsed_data['tags_list']:
-                            tags_section.append(f"- Tag: {tag_dict['name']}, Vol: {tag_dict['volume']}, Comp: {tag_dict['competition']}, Score: {tag_dict['score']}")
-                        if len(tags_section) > 1:
-                            notes_output.append("\n".join(tags_section))
+                    
+                    # DO NOT reconstruct Tags section for notes
 
                     # Reconstruct More Details section directly from parsed_data['more_details_list']
                     if parsed_data.get('more_details_list'):
@@ -1098,6 +1101,18 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
     st.text_area("Potential AliExpress URLs (one per line)", key="aliexpress_urls")
     st.text_area("Notes/Validation (Description/Reviews/Tags/Details added here)", key="notes", height=300) 
 
+    # --- Display Parsed Everbee Tags --- 
+    st.subheader("Parsed Everbee Tags")
+    if st.session_state.tags_list:
+        # Convert list of dicts to DataFrame for display
+        tags_df = pd.DataFrame(st.session_state.tags_list)
+        # Reorder columns for better readability
+        display_columns = ['name', 'volume', 'competition', 'score', 'level']
+        tags_df = tags_df[[col for col in display_columns if col in tags_df.columns]] # Ensure columns exist
+        st.dataframe(tags_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No Everbee tags parsed or available in current session.")
+
     if st.button("Add/Update Opportunity in Database"):
         # --- Read data from session_state --- 
         product_title = st.session_state.product_title
@@ -1127,6 +1142,9 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
         review_ratio = st.session_state.review_ratio 
         monthly_reviews_str = st.session_state.monthly_reviews_str
         listing_type = st.session_state.listing_type 
+        
+        # Get the tags list from session state
+        everbee_tags_list = st.session_state.tags_list
 
         # --- Data Validation and Type Conversion --- 
         price = None; shipping_cost = None; est_revenue = None; est_sales = None
@@ -1189,9 +1207,11 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
                 "visibility_score": visibility_score,
                 "review_ratio": review_ratio,
                 "monthly_reviews": monthly_reviews,
-                "listing_type": listing_type
+                "listing_type": listing_type,
+                "everbee_tags": everbee_tags_list # Pass the list to the db function
             }
-
+            
+            # The db.add_opportunity function now handles JSON conversion
             inserted_id = db.add_opportunity(opportunity_data)
             if inserted_id:
                 st.success(f"Successfully added '{product_title}' (ID: {inserted_id}) to the database!")
