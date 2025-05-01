@@ -6,27 +6,33 @@ import json # Added json for tags
 DB_NAME = "etsy_opportunities.db"
 
 def initialize_db():
-    """Initializes the SQLite database and creates the opportunities table if it doesn't exist."""
+    """Initializes the SQLite database and creates/updates the opportunities table."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Check if 'everbee_tags' column exists
+    # --- Schema Versioning/Migration --- 
     cursor.execute("PRAGMA table_info(opportunities)")
     columns = [info[1] for info in cursor.fetchall()]
-    
-    if 'everbee_tags' not in columns:
-        try:
-            # Add the new column if it doesn't exist (for existing databases)
-            cursor.execute("ALTER TABLE opportunities ADD COLUMN everbee_tags TEXT")
-            print("Added 'everbee_tags' column to opportunities table.")
-        except sqlite3.OperationalError as e:
-            # Handle case where table doesn't exist yet (will be created below)
-            if "no such table" not in str(e):
-                 print(f"Warning: Could not add column 'everbee_tags': {e}")
-                 # Potentially raise the error if it's unexpected
-                 # raise e
 
-    # Create table if it doesn't exist (includes all columns)
+    # List of columns to ensure exist: (column_name, sql_type)
+    required_columns = [
+        ('everbee_tags', 'TEXT'),
+        ('last_30_days_sales', 'INTEGER'),
+        ('last_30_days_revenue', 'REAL') # Added
+    ]
+
+    for col_name, col_type in required_columns:
+        if col_name not in columns:
+            try:
+                cursor.execute(f"ALTER TABLE opportunities ADD COLUMN {col_name} {col_type}")
+                print(f"Added '{col_name}' column to opportunities table.")
+            except sqlite3.OperationalError as e:
+                # Handle case where table doesn't exist yet (created below)
+                if "no such table" not in str(e): 
+                    print(f"Warning: Could not add column '{col_name}': {e}")
+
+    # --- Create Table (if it doesn't exist) --- 
+    # Includes all current columns
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS opportunities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,16 +63,12 @@ def initialize_db():
             review_ratio TEXT,
             monthly_reviews INTEGER,
             listing_type TEXT,
-            everbee_tags TEXT
+            everbee_tags TEXT,
+            last_30_days_sales INTEGER,
+            last_30_days_revenue REAL 
         )
     ''')
-    # Add shipping_cost column if it doesn't exist (for backward compatibility)
-    try:
-        cursor.execute('ALTER TABLE opportunities ADD COLUMN shipping_cost REAL')
-        print("Added shipping_cost column to opportunities table.")
-    except sqlite3.OperationalError as e:
-        if 'duplicate column name' not in str(e):
-            raise e # Reraise if it's not the expected error
+            
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
@@ -85,27 +87,31 @@ def add_opportunity(data):
                 print(f"Error converting tags to JSON: {e}. Tags will be stored as null.")
                 tags_json = None # Ensure it's None if dumping fails
         
-        cursor.execute("""
-            INSERT INTO opportunities (
-                product_title, price, product_url, shop_name, shop_url, 
-                niche_tags, est_monthly_revenue, est_monthly_sales, shop_age, 
-                processing_time, shipping_cost, aliexpress_urls, is_digital, notes,
-                total_sales, views, favorites, conversion_rate, listing_age, 
-                shop_age_overall, category, visibility_score, review_ratio, 
-                monthly_reviews, listing_type, everbee_tags
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """, (
-            data.get('product_title'), data.get('price'), data.get('product_url'), 
-            data.get('shop_name'), data.get('shop_url'), data.get('niche_tags'), 
-            data.get('est_monthly_revenue'), data.get('est_monthly_sales'), data.get('shop_age'),
-            data.get('processing_time'), data.get('shipping_cost'), data.get('aliexpress_urls'),
-            data.get('is_digital', False), data.get('notes'),
-            data.get('total_sales'), data.get('views'), data.get('favorites'), 
-            data.get('conversion_rate'), data.get('listing_age'), data.get('shop_age_overall'), 
-            data.get('category'), data.get('visibility_score'), data.get('review_ratio'),
-            data.get('monthly_reviews'), data.get('listing_type'), tags_json
-        ))
+        # Prepare column names and placeholders dynamically (more robust)
+        # Filter out keys not present in data or None
+        valid_data = {k: v for k, v in data.items() if v is not None}
+        
+        # Special handling for tags JSON
+        if tags_json is not None:
+            valid_data['everbee_tags'] = tags_json
+        else:
+            valid_data.pop('everbee_tags', None) # Remove if None
+        
+        # Ensure boolean is 0 or 1 if present
+        if 'is_digital' in valid_data:
+             valid_data['is_digital'] = 1 if valid_data['is_digital'] else 0
+        if 'is_potential_dropshipper' in valid_data:
+             valid_data['is_potential_dropshipper'] = 1 if valid_data['is_potential_dropshipper'] else 0
+            
+        columns = ', '.join(valid_data.keys())
+        placeholders = ', '.join('?' * len(valid_data))
+        sql = f'INSERT INTO opportunities ({columns}) VALUES ({placeholders});'
+        values = tuple(valid_data.values())
+
+        # print(f"DEBUG DB SQL: {sql}") # DEBUG
+        # print(f"DEBUG DB Values: {values}") # DEBUG
+        
+        cursor.execute(sql, values)
         conn.commit()
         last_id = cursor.lastrowid
     except sqlite3.IntegrityError as e:
@@ -148,6 +154,26 @@ def get_all_opportunities():
     except Exception as e:
         print(f"Error fetching data: {e}")
         return pd.DataFrame() # Return empty DataFrame on other errors
+    finally:
+        conn.close()
+
+def delete_opportunity_by_id(opportunity_id):
+    """Deletes an opportunity from the database based on its ID."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM opportunities WHERE id = ?", (opportunity_id,))
+        conn.commit()
+        if cursor.rowcount > 0:
+            print(f"Successfully deleted opportunity with ID: {opportunity_id}")
+            return True
+        else:
+            print(f"No opportunity found with ID: {opportunity_id}")
+            return False
+    except sqlite3.Error as e:
+        print(f"Database error deleting opportunity ID {opportunity_id}: {e}")
+        conn.rollback() # Rollback changes on error
+        return False
     finally:
         conn.close()
 

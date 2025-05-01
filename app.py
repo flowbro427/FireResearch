@@ -34,7 +34,9 @@ def init_session_state():
         # New Everbee fields (using _str suffix for display where needed)
         "total_sales_str", "views_str", "favorites_str", "conversion_rate",
         "listing_age", "shop_age_overall", "category", "visibility_score",
-        "review_ratio", "monthly_reviews_str", "listing_type"
+        "review_ratio", "monthly_reviews_str", "listing_type",
+        "last_30_days_sales_str", # Added for Trends data
+        "last_30_days_revenue_str" # Added calculated field
     ]
     for field in string_fields:
         if field not in st.session_state:
@@ -75,13 +77,17 @@ def calculate_days_until_delivery(date_str):
     current_year = today.year
     time_str = ""
 
-    # Regex to find date patterns like "30 Apr" or "30 Apr-06 May"
-    match = re.search(r'(\d{1,2}\s+[A-Za-z]{3})(?:-(\d{1,2}\s+[A-Za-z]{3}))?', date_str)
+    # Regex to find patterns like \"30 Apr\" or \"06-08 May\" 
+    # Groups: 1=start_day, 2=end_day (optional), 3=month
+    match = re.search(r'(\d{1,2})(?:-(\d{1,2}))?\s+([A-Za-z]{3})', date_str)
     if not match:
         return date_str # Return original string if format not recognized
 
-    start_date_str = match.group(1)
-    end_date_str = match.group(2)
+    start_day = match.group(1)
+    end_day = match.group(2) # This will be None if it's not a range like "DD-DD Month"
+    month = match.group(3)
+    
+    start_date_str = f"{start_day} {month}" # Reconstruct e.g., "06 May"
 
     def parse_date_with_year(d_str):
         try:
@@ -100,11 +106,13 @@ def calculate_days_until_delivery(date_str):
 
     delta_start = (start_date - today).days
 
-    if end_date_str:
+    if end_day: # If end_day (group 2) was captured, it's a DD-DD Month range
+        end_date_str = f"{end_day} {month}" # Reconstruct e.g., "08 May"
         end_date = parse_date_with_year(end_date_str)
         if end_date:
             # Ensure end date is not before start date (handles year rollover)
             if end_date < start_date:
+                 # Assume end date is next year relative to start_date's year
                  end_date = datetime.strptime(f"{end_date_str} {start_date.year + 1}", '%d %b %Y').date()
 
             delta_end = (end_date - today).days
@@ -114,7 +122,7 @@ def calculate_days_until_delivery(date_str):
                  time_str = date_str
         else:
              time_str = date_str # Return original if end date fails
-    else:
+    else: # Only a single date (e.g., "30 Apr") was found
         if delta_start >= 0:
             time_str = f"{delta_start} days"
         else: # If calculated date is invalid, return original
@@ -252,31 +260,44 @@ def parse_etsy_html_content(html_content):
             edd_value_span = edd_li.find('span', {'data-shipping-edd-value': True})
             if edd_value_span:
                 date_range_str = edd_value_span.get_text(strip=True)
+                print(f"DEBUG Shipping: Attempt 1 - Found date string via span: '{date_range_str}'") # DEBUG
                 est_delivery_days = calculate_days_until_delivery(date_range_str)
             else:
                 # Fallback text search if specific span not found within edd_li
                  arrival_tag = edd_li.find(string=lambda t: t and ('get it by' in t.lower() or 'arrives by' in t.lower()))
                  if arrival_tag:
                      date_part = arrival_tag.strip().split('by')[-1].strip()
+                     print(f"DEBUG Shipping: Attempt 2 - Found date string via text fallback within li: '{date_part}'") # DEBUG
                      est_delivery_days = calculate_days_until_delivery(date_part)
         
         # --- If original method failed, broaden the search within the section ---
         if not est_delivery_days:
-            # Search for any text node containing "Get it by" or "Arrives by" within the shipping section
-            arrival_text_match = shipping_section.find(string=lambda t: t and ('get it by' in t.lower() or 'arrives by' in t.lower()))
-            if arrival_text_match:
-                # Extract the date part after "by"
-                try:
-                    date_part = arrival_text_match.strip().split('by')[-1].strip()
-                    # Remove potential leading/trailing punctuation if necessary (e.g., if it finds " Arrives by **30 Apr**.")
-                    date_part = re.sub(r'^[^\\w\\d]+|[^\\w\\d]+$', '', date_part) # Basic cleanup
-                    if date_part: # Ensure we have something left after cleaning
-                        est_delivery_days = calculate_days_until_delivery(date_part)
-                except IndexError:
-                    pass # Ignore if split fails
+            # Search for any common text element containing "Get it by" or "Arrives by"
+            possible_tags = shipping_section.find_all(['p', 'span', 'div', 'li'])
+            for tag in possible_tags:
+                tag_text = tag.get_text(strip=True, separator=' ')
+                if 'get it by' in tag_text.lower() or 'arrives by' in tag_text.lower():
+                    try:
+                        # Extract the part after " by " (case-insensitive)
+                        date_part = re.split(r' by ', tag_text, flags=re.IGNORECASE)[-1].strip()
+                        # Basic cleanup (remove leading/trailing non-alphanumeric, keeping spaces/hyphens needed for date)
+                        date_part = re.sub(r'^[^\w\d]+|[^\w\d]+$', '', date_part).strip()
+                        if date_part:
+                            print(f"DEBUG Shipping: Attempt 3 - Found date string via broader fallback: '{date_part}'") # DEBUG
+                            est_delivery_days = calculate_days_until_delivery(date_part)
+                            if est_delivery_days and est_delivery_days != date_part: # Check if calculation succeeded
+                                # print(f"DEBUG Shipping: Found date '{date_part}' via broader fallback.") # DEBUG - Redundant
+                                break # Found a valid date, stop searching
+                            else:
+                                est_delivery_days = "" # Reset if calculation failed
+                    except (IndexError, AttributeError) as e:
+                        # print(f"DEBUG Shipping: Error processing tag text '{tag_text}': {e}") # DEBUG optional
+                        pass # Ignore errors in this tag and continue searching
+            # if not est_delivery_days:
+                 # print("DEBUG Shipping: Delivery date pattern not found with any method.") # DEBUG - Redundant
 
-        # --- Shipping Cost (Existing logic seems okay) ---
-        # Find any element containing "Delivery cost:" (case-insensitive)
+        # --- Shipping Cost --- 
+        # Find any element containing \"Delivery cost:\" (case-insensitive)
         cost_element = shipping_section.find(string=re.compile(r'delivery cost:', re.IGNORECASE))
         if cost_element:
             # Try to find the parent element that likely contains the price nearby
@@ -299,6 +320,15 @@ def parse_etsy_html_content(html_content):
                          shipping_cost_str = str(float(cost_match.group(1)))
                      except ValueError:
                          pass
+                         
+        # --- Check for Free Delivery if no cost found --- 
+        if not shipping_cost_str:
+            free_delivery_element = shipping_section.find(string=re.compile(r'free delivery|free shipping', re.IGNORECASE))
+            if free_delivery_element:
+                shipping_cost_str = "0.0" # Set cost to 0 if free delivery text found
+                print("DEBUG Shipping: Found 'Free Delivery' text.") # DEBUG
+            else:
+                print("DEBUG Shipping: Could not find numerical cost OR 'Free Delivery' text.") # DEBUG
 
     data['processing_time'] = est_delivery_days # Store calculated days
     data['shipping_cost_str'] = shipping_cost_str # Store found cost
@@ -426,68 +456,118 @@ def parse_everbee_text_content(page_text):
     # --- Now Parse Remaining Details from the *ENTIRE* text, associating with best row --- 
     # Re-initialize parsed_data with the essential best row data
     parsed_data = best_row_data.copy()
+    
+    # --- IMPORTANT: Remove price info derived from Everbee --- 
+    if 'price' in parsed_data:
+        del parsed_data['price']
+    if 'price_str_display' in parsed_data:
+        del parsed_data['price_str_display']
+        
     raw_values_full = {} # For parsing the rest of the fields from the full text
 
-    # --- Define Keyword -> Value Pattern Mappings (Full Set) --- 
+    # --- Define Keyword -> Value Pattern Mappings (Full Set) ---
     keyword_patterns_full = {
-        # Primary Listing Details (May overlap with essential, but parsed again for consistency)
-        'Mo. Sales': r'^(\d+)$|', # Already got from best row
-        'Mo. Revenue': r'^([\$\£€]\d[\d,\.]*)$|', # Already got from best row
+        # Pattern for VALUE is used for Shop Age
+        'Mo. Sales': r'^(\d+)$|', 
+        'Mo. Revenue': r'^([\$\£€]\d[\d,\.]*)$', 
         'Total sales': r'^(\d+)$|',
-        'Listing age': r'^(\d+\s+months?)$|',
+        'Listing age': r'^(\d+\s+months?|\d+\s+Mo\.)$|', # Pattern allows months OR Mo.
+        #'Shop Age': r'^(\d+\s+Mo\.)$|', # REMOVED - Relying on counter
         'Reviews': r'^(\d+)$|',
-        'Views': r'^(\d[\d,]*)$|',
-        'Favorites': r'^(\d[\d,]*)$|',
+        'Views': r'^(\d[\d,]*)$',
+        'Favorites': r'^(\d[\d,]*)$',
         'Mo. Reviews': r'^(\d+)$|',
-        'Conversion rate': r'^([\d.]+%?)$|',
-        'Category': r'^([A-Za-z][A-Za-z &/\s]+[A-Za-z])$|', # More specific: start/end with letter
+        'Conversion rate': r'^([\d.]+%?)$',
+        'Category': r'^([A-Za-z][A-Za-z &/\s]+[A-Za-z])$|',
         'Visibility score': r'^(\d+%?)$|',
         'Review ratio': r'^([\d.]+%?)$|',
-        'Shop Age': r'^(\d+\s+Mo\.)\s*$', 
     }
-    standalone_value_keys_full = ['Shop Age'] 
 
     # --- Iterate through *ALL* lines looking for Keywords & Values for the full dataset ---
+    mo_pattern_count = 0
+    temp_listing_age_mo = None
+    temp_shop_age_mo = None
+    shop_age_pattern_val_only = r'^(\d+\s+Mo\.)$' # Just the value pattern
+    
     for i, line in enumerate(lines):
-        # Check for standalone values first
-        for key in standalone_value_keys_full:
-             if key not in raw_values_full:
-                 match = re.match(keyword_patterns_full[key], line, re.IGNORECASE)
-                 if match and match.group(1):
-                     raw_values_full[key] = match.group(1).strip()
-                     # Try to find Total Shop Sales and Listing Type nearby
-                     if key == 'Shop Age':
-                          if i + 2 < num_lines:
-                               if 'total_shop_sales' not in raw_values_full and re.match(r'^\d[\d,]*$', lines[i+1]):
-                                    raw_values_full['total_shop_sales'] = lines[i+1]
-                               if i + 3 < num_lines and 'listing_type' not in raw_values_full and re.match(r'^[A-Za-z]+$', lines[i+2]):
-                                     raw_values_full['listing_type'] = lines[i+2]
-                     break 
+        line_content_stripped = line.strip()
+        if not line_content_stripped: continue # Skip blank lines
+
+        found_as_label = False
         
-        # Check for Keyword labels
-        matched_label = None
+        # --- Step 1: Check if line IS a known LABEL --- 
         for label, value_pattern in keyword_patterns_full.items():
-            if line.lower() == label.lower():
-                 matched_label = label
-                 break
-        
-        if matched_label and matched_label not in raw_values_full and i + 1 < num_lines:
-            value_pattern = keyword_patterns_full[matched_label]
-            match_next = re.match(value_pattern, lines[i+1], re.IGNORECASE)
-            if match_next and match_next.group(1):
-                 raw_values_full[matched_label] = match_next.group(1).strip()
-            elif i + 2 < num_lines and not lines[i+1]: # Allow blank line
-                 match_skip = re.match(value_pattern, lines[i+2], re.IGNORECASE)
-                 if match_skip and match_skip.group(1):
-                     raw_values_full[matched_label] = match_skip.group(1).strip()
+            if label not in raw_values_full and line_content_stripped.lower() == label.lower():
+                found_as_label = True
+                matched_label = label
+                # ... (Value finding logic for label on next line(s) - REMAINS SAME) ...
+                value_match_obj = None
+                current_value_pattern = value_pattern
+                # Removed the incorrect if statement and duplicate print that caused the error
+                
+                # --- Find VALUE for this label on next line(s) --- 
+                print(f"DEBUG LABEL FOUND: Line {i} is label '{matched_label}'") # DEBUG
+                value_match_obj = None
+                current_value_pattern = value_pattern # Use the specific pattern for this label
+                # Try line i+1
+                if i + 1 < num_lines:
+                    match_next = re.match(current_value_pattern, lines[i+1].strip(), re.IGNORECASE)
+                    if match_next and match_next.groups(): 
+                        value_match_obj = match_next
+                
+                # Try line i+2 if i+1 was blank or didn't match
+                if value_match_obj is None and i + 2 < num_lines and not lines[i+1].strip(): 
+                    match_skip = re.match(current_value_pattern, lines[i+2].strip(), re.IGNORECASE)
+                    if match_skip and match_skip.groups(): 
+                        value_match_obj = match_skip
+                
+                # Store value if found
+                if value_match_obj:
+                    raw_values_full[matched_label] = value_match_obj.group(1).strip()
+                    print(f"DEBUG VALUE STORED (for Label '{matched_label}'): '{raw_values_full[matched_label]}'") # DEBUG
+                else:
+                     print(f"DEBUG VALUE NOT FOUND for label '{matched_label}'") #DEBUG
+                     
+                break # Stop checking other labels for this line
+
+        # --- Step 2: If line was NOT a label, check if it IS an 'XX Mo.' pattern --- 
+        if not found_as_label:
+            mo_match = re.match(shop_age_pattern_val_only, line_content_stripped, re.IGNORECASE)
+            if mo_match and mo_match.group(1):
+                mo_pattern_count += 1
+                current_mo_value = mo_match.group(1).strip()
+                print(f"DEBUG MO. MATCH: Found '{current_mo_value}', Count={mo_pattern_count}") # DEBUG
+                if mo_pattern_count == 1:
+                    temp_listing_age_mo = current_mo_value
+                    print(f"DEBUG MO. ASSIGNED: Set Listing Age (Mo.) = {temp_listing_age_mo}") # DEBUG
+                elif mo_pattern_count == 2:
+                    temp_shop_age_mo = current_mo_value
+                    print(f"DEBUG MO. ASSIGNED: Set Shop Age (Mo.) = {temp_shop_age_mo}") # DEBUG
+                    # Can potentially break early if we only expect 2, but safer to continue
 
     # --- Add fully parsed data to the best_row data, converting types --- 
-    # Only add if not already present from the essential parse
+    # ... (Category assignment remains same) ...
     parsed_data['category'] = raw_values_full.get('Category')
-    if 'listing_age' not in parsed_data: parsed_data['listing_age'] = raw_values_full.get('Listing age')
-    parsed_data['shop_age_overall'] = raw_values_full.get('Shop Age')
+    
+    # Assign Listing Age: Prioritize direct Mo. match, fallback to label match
+    if temp_listing_age_mo:
+        parsed_data['listing_age'] = temp_listing_age_mo
+    elif 'Listing age' in raw_values_full: # If label matched e.g. "X months"
+         parsed_data['listing_age'] = raw_values_full['Listing age']
+    elif 'listing_age' not in parsed_data: # If not found either way
+         parsed_data['listing_age'] = None
+         
+    # Assign Shop Age: Use direct Mo. match if found
+    if temp_shop_age_mo:
+        parsed_data['shop_age_overall'] = temp_shop_age_mo
+    elif 'Shop Age' in raw_values_full: # Fallback in case old logic stored something
+        parsed_data['shop_age_overall'] = raw_values_full['Shop Age']
+    elif 'shop_age_overall' not in parsed_data:
+         parsed_data['shop_age_overall'] = None
+         
     if 'listing_type' not in parsed_data: parsed_data['listing_type'] = raw_values_full.get('listing_type')
-
+    
+    # ... (rest of type conversions/assignments) ...
     # Numeric Conversions for full data
     def safe_int_full(key): 
         val_str = raw_values_full.get(key)
@@ -498,12 +578,42 @@ def parse_everbee_text_content(page_text):
     parsed_data['views'] = safe_int_full('Views')
     parsed_data['favorites'] = safe_int_full('Favorites')
     parsed_data['monthly_reviews'] = safe_int_full('Mo. Reviews')
-    parsed_data['total_shop_sales'] = safe_int_full('total_shop_sales')
+    # This was missing - ensure it's parsed if present in raw_values_full
+    parsed_data['total_shop_sales'] = safe_int_full('total_shop_sales') 
 
     # Percentage/String fields
     parsed_data['conversion_rate'] = raw_values_full.get('Conversion rate')
     parsed_data['visibility_score'] = raw_values_full.get('Visibility score')
     parsed_data['review_ratio'] = raw_values_full.get('Review ratio')
+
+    # --- Try to find Last 30 Days Sales (Trends data) ---
+    # Heuristic: Look for "Sales" followed immediately by a number line
+    # Search *after* potential product rows and core details, before Tags/Details
+    # Define a reasonable search range (heuristic, might need adjustment)
+    trends_search_start_index = len(row_start_indices) * 5 # Estimate past product rows
+    trends_search_end_index = num_lines - 20 # Estimate before Tags/Details start
+    trends_search_end_index = max(trends_search_start_index, trends_search_end_index) # Ensure end >= start
+    
+    last_30_sales_value = None
+    for i in range(trends_search_start_index, trends_search_end_index):
+        if lines[i].strip().lower() == 'sales' and i + 1 < num_lines:
+            sales_val_match = re.match(r'^(\d+)$', lines[i+1].strip())
+            if sales_val_match:
+                # Potential check: Is there a Revenue line nearby?
+                revenue_nearby = False
+                for j in range(max(0, i - 1), min(num_lines, i + 4)):
+                    if lines[j].strip().lower() == 'revenue':
+                        revenue_nearby = True
+                        break
+                if revenue_nearby:
+                    last_30_sales_value = sales_val_match.group(1)
+                    print(f"DEBUG TRENDS: Found potential Last 30 Days Sales: {last_30_sales_value} at line index {i+1}") # DEBUG
+                    break # Found it
+
+    if last_30_sales_value:
+        parsed_data['last_30_days_sales'] = last_30_sales_value
+    else:
+        print("DEBUG TRENDS: Did not find specific 'Last 30 Days Sales' pattern.") # DEBUG
 
     # --- Parse Tags Section (Simpler Sequential Approach) --- 
     tags_list = [] 
@@ -1005,7 +1115,8 @@ if st.button("Parse Everbee Text"):
                     # --- Update ALL relevant session state fields from parsed_data --- 
                     st.session_state.product_title = parsed_data.get('product_title', st.session_state.product_title)
                     st.session_state.shop_name = parsed_data.get('shop_name', st.session_state.shop_name)
-                    st.session_state.price_str = parsed_data.get('price_str_display', str(parsed_data.get('price', ''))) # Use display string or format float
+                    # --- DO NOT UPDATE PRICE HERE - Use Etsy HTML price ---
+                    # st.session_state.price_str = parsed_data.get('price_str_display', str(parsed_data.get('price', ''))) # REMOVED
                     st.session_state.est_sales_str = str(parsed_data.get('monthly_sales', ''))
                     st.session_state.est_revenue_str = parsed_data.get('monthly_revenue_str_display', str(parsed_data.get('monthly_revenue', ''))) # Use display string or format float
                     st.session_state.total_sales_str = str(parsed_data.get('total_sales', ''))
@@ -1023,6 +1134,28 @@ if st.button("Parse Everbee Text"):
                     # Store the parsed tags list in session state
                     st.session_state.tags_list = parsed_data.get('tags_list', [])
 
+                    # Store the new Last 30 Days Sales
+                    st.session_state.last_30_days_sales_str = parsed_data.get('last_30_days_sales', '')
+
+                    # --- Calculate and Store Last 30 Days Revenue --- 
+                    last_30_rev = None
+                    # --- USE ETSY PRICE (float) FROM SESSION STATE ---
+                    price_val = st.session_state.get('etsy_price_float') 
+                    sales_30d_str = parsed_data.get('last_30_days_sales') # Expecting string
+                    
+                    if price_val is not None and sales_30d_str:
+                        try:
+                            sales_30d_int = int(sales_30d_str.replace(',', ''))
+                            last_30_rev = price_val * sales_30d_int
+                            st.session_state.last_30_days_revenue_str = f"{last_30_rev:.2f}" # Store as formatted string
+                            print(f"DEBUG TRENDS: Calculated 30d Revenue using Etsy Price ({price_val}): {last_30_rev:.2f}") # DEBUG Updated
+                        except (ValueError, TypeError) as calc_e:
+                            print(f"DEBUG TRENDS: Error calculating 30d Revenue using Etsy Price ({price_val}): {calc_e}") # DEBUG Updated
+                            st.session_state.last_30_days_revenue_str = "Error" # Indicate calculation error
+                    else:
+                        print(f"DEBUG TRENDS: Missing Etsy Price ({price_val}) or 30d Sales ({sales_30d_str}) for revenue calculation.") # DEBUG Updated
+                        st.session_state.last_30_days_revenue_str = "" # Clear if data missing
+                        
                     # --- Append Everbee notes to existing notes --- 
                     existing_notes = st.session_state.notes
                     # Remove previous Everbee sections first (including Tags now)
@@ -1084,11 +1217,13 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
         st.text_input("Shipping Cost (e.g., 4.99)", key="shipping_cost_str")
 
     with col2:
-        st.text_input("Est. Monthly Revenue (e.g., 10000)", key="est_revenue_str")
-        st.text_input("Est. Monthly Sales (e.g., 300)", key="est_sales_str")
-        st.text_input("Listing Age (e.g., 17 months)", key="listing_age") # From Everbee
-        st.text_input("Shop Age Overall (e.g., 108 Mo.)", key="shop_age_overall") # From Everbee
-        st.text_input("Category", key="category") # From Everbee
+        st.text_input("Average Lifetime Monthly Revenue", key="est_revenue_str")
+        st.text_input("Average Lifetime Monthly Sales", key="est_sales_str")
+        st.text_input("Last 30 Days Sales (Trends)", key="last_30_days_sales_str")
+        st.text_input("Last 30 Days Revenue (Calculated)", key="last_30_days_revenue_str", disabled=True) # Added display field
+        st.text_input("Listing Age (e.g., 17 months)", key="listing_age")
+        st.text_input("Shop Age Overall (e.g., 108 Mo.)", key="shop_age_overall")
+        st.text_input("Category", key="category")
         st.text_input("Niche Tags (comma-separated)", key="niche_tags")
         st.text_input("Total Sales (Everbee)", key="total_sales_str")
         st.text_input("Total Views (Everbee)", key="views_str")
@@ -1125,7 +1260,6 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
         is_digital = st.session_state.is_digital
         est_revenue_str = st.session_state.est_revenue_str
         est_sales_str = st.session_state.est_sales_str
-        # shop_age = st.session_state.shop_age # Use shop_age_overall instead
         niche_tags = st.session_state.niche_tags
         aliexpress_urls = st.session_state.aliexpress_urls
         notes = st.session_state.notes
@@ -1145,10 +1279,14 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
         
         # Get the tags list from session state
         everbee_tags_list = st.session_state.tags_list
-
+        last_30_days_sales_str = st.session_state.last_30_days_sales_str # Added missing read
+        last_30_days_revenue_str = st.session_state.last_30_days_revenue_str # Added
+        
         # --- Data Validation and Type Conversion --- 
         price = None; shipping_cost = None; est_revenue = None; est_sales = None
         total_sales = None; views = None; favorites = None; monthly_reviews = None
+        last_30_days_sales = None 
+        last_30_days_revenue = None # Added
         input_valid = True
 
         if not all([product_title, product_url]): # Only title and URL are strictly required now
@@ -1174,8 +1312,11 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
         views, v_valid = validate_int(views_str, "Total Views")
         favorites, f_valid = validate_int(favorites_str, "Total Favorites")
         monthly_reviews, mr_valid = validate_int(monthly_reviews_str, "Monthly Reviews")
+        last_30_days_sales, l30ds_valid = validate_int(last_30_days_sales_str, "Last 30 Days Sales") 
+        last_30_days_revenue, l30dr_valid = validate_float(last_30_days_revenue_str, "Last 30 Days Revenue") # Added validation
         
-        input_valid = input_valid and price_valid and sc_valid and er_valid and es_valid and ts_valid and v_valid and f_valid and mr_valid
+        input_valid = input_valid and price_valid and sc_valid and er_valid and es_valid 
+        input_valid = input_valid and ts_valid and v_valid and f_valid and mr_valid and l30ds_valid and l30dr_valid # Added l30dr_valid
 
         # --- Add to Database if Valid --- 
         if input_valid:
@@ -1208,20 +1349,45 @@ with st.expander("Add/Review Opportunity Details", expanded=True):
                 "review_ratio": review_ratio,
                 "monthly_reviews": monthly_reviews,
                 "listing_type": listing_type,
-                "everbee_tags": everbee_tags_list # Pass the list to the db function
+                "everbee_tags": everbee_tags_list, 
+                "last_30_days_sales": last_30_days_sales, 
+                "last_30_days_revenue": last_30_days_revenue # Added field
             }
             
-            # The db.add_opportunity function now handles JSON conversion
+            # The db.add_opportunity function now handles JSON conversion and dynamic keys
             inserted_id = db.add_opportunity(opportunity_data)
             if inserted_id:
                 st.success(f"Successfully added '{product_title}' (ID: {inserted_id}) to the database!")
                 init_session_state() # Reset state for next entry
-                st.experimental_rerun()
+                st.rerun() # Use the current standard rerun function
             else:
                 st.error("Failed to add opportunity. Does an entry with the same Product URL (after cleaning) already exist?")
 
 # --- Saved Opportunities Display --- 
 st.subheader("Saved Opportunities")
+
+# --- Add Deletion UI --- 
+with st.expander("Delete Opportunity", expanded=False):
+    del_col1, del_col2 = st.columns([1, 3])
+    with del_col1:
+        id_to_delete = st.number_input("Enter ID to Delete", min_value=1, step=1, value=None, key="delete_id_input")
+    with del_col2:
+        st.caption(" ") # Add some space
+        if st.button("🗑️ Delete Opportunity by ID", key="delete_button"):
+            if id_to_delete:
+                with st.spinner(f"Attempting to delete opportunity ID: {id_to_delete}..."):
+                    deleted = db.delete_opportunity_by_id(id_to_delete)
+                    if deleted:
+                        st.success(f"Successfully deleted opportunity ID: {id_to_delete}")
+                        # Clear the input field after successful deletion - RERUN HANDLES THIS
+                        # st.session_state.delete_id_input = None # REMOVED
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to delete opportunity ID: {id_to_delete}. Check if the ID exists.")
+            else:
+                st.warning("Please enter an ID to delete.")
+
+# --- Filtering --- 
 opportunities_df = db.get_all_opportunities()
 
 if opportunities_df is None or opportunities_df.empty:
@@ -1253,24 +1419,33 @@ else:
             "price": st.column_config.NumberColumn("Price", format="$%.2f"),
             "shipping_cost": st.column_config.NumberColumn("Shp Cost", format="$%.2f"),
             "processing_time": st.column_config.TextColumn("Prc+Shp Time", width="medium"), 
-            "est_monthly_revenue": st.column_config.NumberColumn("Est Rev", format="$%.0f"),
-            "est_monthly_sales": st.column_config.NumberColumn("Est Sales"),
+            "est_monthly_revenue": st.column_config.NumberColumn("Avg Mo Rev", format="$%.0f"),
+            "est_monthly_sales": st.column_config.NumberColumn("Avg Mo Sales"),
+            "last_30_days_sales": st.column_config.NumberColumn("Last 30d Sales"),
+            "last_30_days_revenue": st.column_config.NumberColumn("Last 30d Rev", format="$%.0f"),
             "total_sales": st.column_config.NumberColumn("Total Sales"),
             "views": st.column_config.NumberColumn("Views"),
             "favorites": st.column_config.NumberColumn("Favs"),
             "conversion_rate": st.column_config.TextColumn("Conv Rate"),
-            "listing_age": st.column_config.TextColumn("Lst Age"),
-            "shop_age_overall": st.column_config.TextColumn("Shp Age"),
+            "listing_age": st.column_config.TextColumn("Listing Age"),
+            "shop_age_overall": st.column_config.TextColumn("Shop Age"),
             "category": st.column_config.TextColumn("Category", width="medium"),
             "monthly_reviews": st.column_config.NumberColumn("Mo Revs"),
             "listing_type": st.column_config.TextColumn("Type"),
             "niche_tags": st.column_config.TextColumn("Niche Tags", width="medium"),
             "aliexpress_urls": st.column_config.TextColumn("Ali URLs", width="medium"),
-             "notes": st.column_config.TextColumn("Notes", width="large"),
+            "notes": st.column_config.TextColumn("Notes", width="large"),
             "added_at": st.column_config.DatetimeColumn("Added", format="YYYY-MM-DD HH:mm"),
             "is_digital": st.column_config.CheckboxColumn("Digital?", width="small"),
-            # Add others like visibility_score, review_ratio if desired columns
+            "everbee_tags": st.column_config.TextColumn("Tags Data", width="medium") 
         },
+        column_order=("id", "product_title", "shop_name", "price", "est_monthly_revenue", 
+                      "est_monthly_sales", "last_30_days_sales", "last_30_days_revenue",
+                      "total_sales", "listing_age", "shop_age_overall",
+                      "category", "product_url", "shop_url", "processing_time", 
+                      "shipping_cost", "views", "favorites", "conversion_rate", "monthly_reviews", 
+                      "review_ratio", "listing_type", "is_digital", "niche_tags", 
+                      "aliexpress_urls", "notes", "added_at", "everbee_tags"),
         hide_index=True,
         use_container_width=True
     ) 
