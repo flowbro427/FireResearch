@@ -1095,6 +1095,27 @@ tab1, tab2 = st.tabs(["Opportunity Tracker", "ERANK Keyword Analysis"])
 # === Opportunity Tracker Tab === #
 # =========================== #
 with tab1:
+    # --- Check if form should be cleared --- 
+    if st.session_state.get('clear_form', False):
+        form_keys_to_clear = [
+            'opp_form_product_title', 'opp_form_product_url', 'opp_form_shop_name',
+            'opp_form_shop_url', 'opp_form_price_str', 'opp_form_processing_time',
+            'opp_form_shipping_cost_str', 'opp_form_est_revenue_str', 'opp_form_est_sales_str',
+            'opp_form_last_30_days_sales_str', 'opp_form_last_30_days_revenue_str',
+            'opp_form_listing_age', 'opp_form_shop_age_overall', 'opp_form_category',
+            'opp_form_niche_tags', 'opp_form_total_sales_str', 'opp_form_views_str',
+            'opp_form_favorites_str', 'opp_form_conversion_rate', 'opp_form_listing_type',
+            'opp_form_aliexpress_urls', 'opp_form_notes',
+            'pasted_html', 'pasted_everbee_text' # Also clear text areas
+        ]
+        for key in form_keys_to_clear:
+            if key in st.session_state: st.session_state[key] = ""
+        st.session_state.is_digital = False
+        st.session_state.tags_list = []
+        st.session_state.etsy_price_float = None
+        st.session_state.clear_form = False # Reset the flag
+        print("DEBUG: Cleared form fields at start of run.")
+
     st.header("Opportunity Tracker Workflow")
 
     # --- Prompt Generation Section ---
@@ -1388,25 +1409,10 @@ Products must target $30+ price points.
         st.text_area("Potential AliExpress URLs (one per line)", key="opp_form_aliexpress_urls")
         st.text_area("Notes/Validation (Description/Reviews/Tags/Details added here)", key="opp_form_notes", height=300)
 
-        # --- Callback function to clear form state ---
-        def clear_opportunity_form():
-            form_keys_to_clear = [
-                'opp_form_product_title', 'opp_form_product_url', 'opp_form_shop_name',
-                'opp_form_shop_url', 'opp_form_price_str', 'opp_form_processing_time',
-                'opp_form_shipping_cost_str', 'opp_form_est_revenue_str', 'opp_form_est_sales_str',
-                'opp_form_last_30_days_sales_str', 'opp_form_last_30_days_revenue_str',
-                'opp_form_listing_age', 'opp_form_shop_age_overall', 'opp_form_category',
-                'opp_form_niche_tags', 'opp_form_total_sales_str', 'opp_form_views_str',
-                'opp_form_favorites_str', 'opp_form_conversion_rate', 'opp_form_listing_type',
-                'opp_form_aliexpress_urls', 'opp_form_notes',
-                'pasted_html', 'pasted_everbee_text' # Also clear text areas
-            ]
-            for key in form_keys_to_clear:
-                if key in st.session_state: st.session_state[key] = ""
-            st.session_state.is_digital = False
-            st.session_state.tags_list = []
-            st.session_state.etsy_price_float = None
-            print("DEBUG: Cleared form fields via callback.") # Optional debug print
+        # --- Callback function to clear form state (sets a flag) ---
+        def clear_opportunity_form_flag():
+            st.session_state.clear_form = True
+            print("DEBUG: Set clear_form flag.")
 
         # --- Display Parsed Everbee Tags ---
         st.subheader("Parsed Everbee Tags")
@@ -1417,8 +1423,8 @@ Products must target $30+ price points.
             st.dataframe(tags_df, use_container_width=True, hide_index=True)
         else: st.info("No Everbee tags parsed or available in current session.")
 
-        # Attach the callback to the button
-        if st.button("Add/Update Opportunity in Database", key="add_update_opp_button", on_click=clear_opportunity_form):
+        # Attach the FLAG-SETTING callback to the button
+        if st.button("Add/Update Opportunity in Database", key="add_update_opp_button", on_click=clear_opportunity_form_flag):
             # --- Read data from FORM session_state keys ---
             product_title = st.session_state.opp_form_product_title
             product_url = st.session_state.opp_form_product_url
@@ -1491,24 +1497,8 @@ Products must target $30+ price points.
                 inserted_id = db.add_opportunity(opportunity_data)
                 if inserted_id:
                     st.success(f"Successfully added '{product_title}' (ID: {inserted_id}) to the database!")
-                    # Clear form fields AFTER successful save
-                    # form_keys_to_clear = [
-                    #     'opp_form_product_title', 'opp_form_product_url', 'opp_form_shop_name',
-                    #     'opp_form_shop_url', 'opp_form_price_str', 'opp_form_processing_time',
-                    #     'opp_form_shipping_cost_str', 'opp_form_est_revenue_str', 'opp_form_est_sales_str',
-                    #     'opp_form_last_30_days_sales_str', 'opp_form_last_30_days_revenue_str',
-                    #     'opp_form_listing_age', 'opp_form_shop_age_overall', 'opp_form_category',
-                    #     'opp_form_niche_tags', 'opp_form_total_sales_str', 'opp_form_views_str',
-                    #     'opp_form_favorites_str', 'opp_form_conversion_rate', 'opp_form_listing_type',
-                    #     'opp_form_aliexpress_urls', 'opp_form_notes',
-                    #     'pasted_html', 'pasted_everbee_text' # Also clear text areas
-                    # ]
-                    # for key in form_keys_to_clear:
-                    #     if key in st.session_state: st.session_state[key] = ""
-                    # st.session_state.is_digital = False
-                    # st.session_state.tags_list = []
-                    # st.session_state.etsy_price_float = None
-                    st.rerun() # Rerun still needed to refresh the display
+                    # The rerun will trigger the check at the top to clear the form
+                    st.rerun()
                 else: st.error("Failed to add opportunity. Check if URL already exists.")
 
     # --- Saved Opportunities Display ---
