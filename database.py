@@ -65,53 +65,68 @@ def initialize_db():
         )
     ''')
 
-    # --- Update ERANK Analyses Table (Remove results column) ---
+    # --- Update ERANK Analyses Table (Add country_code column) ---
     cursor.execute("PRAGMA table_info(erank_keyword_analyses)")
-    columns_erank = [info[1] for info in cursor.fetchall()]
-    if 'analysis_results' in columns_erank:
-        try:
-            # Create new table without the column
+    columns_erank = {info[1]: info[2] for info in cursor.fetchall()} # name: type
+    
+    # Check if country_code exists, if not, migrate
+    if 'country_code' not in columns_erank:
+         print("DEBUG DB: 'country_code' column missing from erank_keyword_analyses. Attempting migration...")
+         try:
+            # Create new table with the column
             cursor.execute('''
                 CREATE TABLE erank_keyword_analyses_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     seed_keyword TEXT,
-                    weights TEXT
+                    weights TEXT,
+                    country_code TEXT -- Added column
                 )
             ''')
-            # Copy data
-            cursor.execute('''
-                INSERT INTO erank_keyword_analyses_new (id, analyzed_at, seed_keyword, weights)
-                SELECT id, analyzed_at, seed_keyword, weights FROM erank_keyword_analyses
-            ''')
+            # Copy data (handle potential missing columns in old table if it was partially migrated)
+            copy_cols_list = ['id', 'analyzed_at', 'seed_keyword', 'weights']
+            copy_cols_sql = ', '.join(copy_cols_list)
+            if all(col in columns_erank for col in copy_cols_list):
+                 cursor.execute(f'''
+                     INSERT INTO erank_keyword_analyses_new ({copy_cols_sql}) 
+                     SELECT {copy_cols_sql} FROM erank_keyword_analyses
+                 ''')
+                 print("DEBUG DB: Copied data to new erank_keyword_analyses schema.")
+            else:
+                 print("Warning DB: Could not copy data to new erank_keyword_analyses schema due to missing source columns.")
+                 
             # Drop old table
             cursor.execute('DROP TABLE erank_keyword_analyses')
             # Rename new table
             cursor.execute('ALTER TABLE erank_keyword_analyses_new RENAME TO erank_keyword_analyses')
-            print("Updated erank_keyword_analyses table: removed 'analysis_results' column.")
-        except sqlite3.Error as e:
-             print(f"Warning: Could not remove 'analysis_results' column from erank_keyword_analyses: {e}")
-             # Fallback: create if not exists (for first run)
+            print("Successfully migrated erank_keyword_analyses table to include 'country_code'.")
+            conn.commit()
+         except sqlite3.Error as e:
+             print(f"ERROR DB: Failed to migrate erank_keyword_analyses table for country_code: {e}.")
+             conn.rollback()
+             # Fallback: Create if not exists with the new column if migration failed
              cursor.execute('''
                  CREATE TABLE IF NOT EXISTS erank_keyword_analyses (
                      id INTEGER PRIMARY KEY AUTOINCREMENT,
                      analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                      seed_keyword TEXT,
-                     weights TEXT
+                     weights TEXT,
+                     country_code TEXT
                  )
              ''')
     else:
-         # Create if not exists (handles first run or if previous migration failed)
+         # If country_code exists, still ensure table exists
          cursor.execute('''
              CREATE TABLE IF NOT EXISTS erank_keyword_analyses (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                  seed_keyword TEXT,
-                 weights TEXT
+                 weights TEXT,
+                 country_code TEXT
              )
          ''')
             
-    # --- Create ERANK Keywords Table (if it doesn't exist) ---
+    # --- ERANK Keywords Table --- 
     # More robust check/migration for added_at column
     cursor.execute("PRAGMA table_info(erank_keywords)")
     columns_erank_kw = {info[1]: info[2] for info in cursor.fetchall()} # Name: Type
@@ -314,10 +329,10 @@ def update_potential_dropshipper_flag(opportunity_id, is_potential):
 
 # --- Functions for ERANK Data ---
 
-def add_erank_analysis(seed_keyword, weights, raw_keyword_list):
-    """Adds ERANK analysis metadata and upserts individual raw keywords based on date."""
+def add_erank_analysis(seed_keyword, country_code, weights, raw_keyword_list):
+    """Adds ERANK analysis metadata (incl. country) and upserts individual raw keywords, 
+    considering keyword, country, and date for uniqueness."""
     conn = sqlite3.connect(DB_NAME)
-    # Set row factory for easy dictionary access
     conn.row_factory = sqlite3.Row 
     cursor = conn.cursor()
     analysis_id = None
@@ -329,20 +344,19 @@ def add_erank_analysis(seed_keyword, weights, raw_keyword_list):
     current_timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S') 
 
     try:
-        # --- Start Transaction --- 
         conn.execute('BEGIN TRANSACTION')
 
-        # 1. Add analysis metadata
+        # 1. Add analysis metadata (including country_code)
         weights_json = json.dumps(weights) if weights else None
         cursor.execute(
-            "INSERT INTO erank_keyword_analyses (seed_keyword, weights) VALUES (?, ?)",
-            (seed_keyword, weights_json)
+            "INSERT INTO erank_keyword_analyses (seed_keyword, country_code, weights) VALUES (?, ?, ?)",
+            (seed_keyword, country_code, weights_json)
         )
         analysis_id = cursor.lastrowid
         if not analysis_id:
              raise Exception("Failed to get analysis_id after insert.")
 
-        # 2. Process individual keywords (Upsert logic)
+        # 2. Process individual keywords (Upsert logic based on keyword + country + date)
         if isinstance(raw_keyword_list, list):
             for kw_dict in raw_keyword_list:
                 keyword_text = kw_dict.get('Keyword')
@@ -350,16 +364,22 @@ def add_erank_analysis(seed_keyword, weights, raw_keyword_list):
                     skipped_count += 1
                     continue # Skip if keyword text is missing
 
-                # Check for existing keyword
-                cursor.execute(
-                    "SELECT id, added_at FROM erank_keywords WHERE keyword = ? ORDER BY added_at DESC LIMIT 1",
-                    (keyword_text,)
-                )
+                # Check for existing keyword FOR THIS COUNTRY
+                # We join to get the country code associated with past keyword entries
+                cursor.execute("""
+                    SELECT k.id, k.added_at 
+                    FROM erank_keywords k
+                    JOIN erank_keyword_analyses a ON k.analysis_id = a.id
+                    WHERE k.keyword = ? AND a.country_code = ?
+                    ORDER BY k.added_at DESC 
+                    LIMIT 1
+                """, (keyword_text, country_code))
                 existing_row = cursor.fetchone() 
 
                 # Prepare data tuple for insert/update (excluding id and added_at initially)
+                # Note: analysis_id here links to the *current* analysis being saved.
                 data_tuple = (
-                    analysis_id,
+                    analysis_id, 
                     kw_dict.get('Avg Searches'),
                     kw_dict.get('Avg Clicks'),
                     kw_dict.get('Avg CTR'),
@@ -368,31 +388,33 @@ def add_erank_analysis(seed_keyword, weights, raw_keyword_list):
                 )
 
                 if existing_row is None:
-                    # --- Insert new keyword --- 
+                    # --- No record found for this keyword + country combination: Insert new --- 
                     cursor.execute("""
-                        INSERT INTO erank_keywords (
+                        INSERT INTO erank_keywords ( 
                             analysis_id, keyword, avg_searches_str, avg_clicks_str, 
                             avg_ctr_str, etsy_competition_str, google_searches_str, added_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (analysis_id, keyword_text) + data_tuple[1:] + (current_timestamp_str,))
                     inserted_count += 1
                 else:
-                    # --- Existing keyword found - check date --- 
+                    # --- Existing keyword found FOR THIS COUNTRY - check date --- 
                     existing_id = existing_row['id']
                     existing_added_at_str = existing_row['added_at']
                     existing_date = None
                     if existing_added_at_str:
                         try:
-                            existing_date = datetime.fromisoformat(existing_added_at_str).date()
+                            # Attempt parsing common formats, including potential microseconds
+                            existing_dt = datetime.fromisoformat(existing_added_at_str.split('.')[0]) # Try removing microseconds first
+                            existing_date = existing_dt.date()
                         except (ValueError, TypeError):
                             print(f"Warning: Could not parse existing date '{existing_added_at_str}' for keyword '{keyword_text}'")
-                            existing_date = None # Treat unparseable date as different?
+                            existing_date = None # Treat unparseable date as different
                     
                     if existing_date == today_date:
-                        # --- Skip (already added today) --- 
+                        # --- Skip (already added today FOR THIS COUNTRY) --- 
                         skipped_count += 1
                     else:
-                        # --- Update existing keyword --- 
+                        # --- Update existing keyword (different date FOR THIS COUNTRY) --- 
                         cursor.execute("""
                             UPDATE erank_keywords 
                             SET analysis_id = ?, 
@@ -406,32 +428,32 @@ def add_erank_analysis(seed_keyword, weights, raw_keyword_list):
                         """, data_tuple + (current_timestamp_str, existing_id))
                         updated_count += 1
         
-        # --- Commit Transaction --- 
         conn.commit()
-        print(f"ERANK Save Summary: Processed {len(raw_keyword_list)} keywords for analysis ID {analysis_id}. Inserted: {inserted_count}, Updated: {updated_count}, Skipped: {skipped_count}")
+        print(f"ERANK Save Summary: Processed {len(raw_keyword_list)} keywords for analysis ID {analysis_id} (Country: {country_code}). Inserted: {inserted_count}, Updated: {updated_count}, Skipped: {skipped_count}")
         
     except Exception as e:
         print(f"Database error during ERANK upsert: {e}")
-        conn.rollback() # Rollback on any error during transaction
-        analysis_id = None # Ensure we return None on error
+        conn.rollback()
+        analysis_id = None 
     finally:
         conn.close()
     return analysis_id
 
 def get_all_erank_analyses():
-    """Retrieves all ERANK analysis metadata entries."""
+    """Retrieves all ERANK analysis metadata entries (including country)."""
     conn = sqlite3.connect(DB_NAME)
     try:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(erank_keyword_analyses)")
         columns = [info[1] for info in cursor.fetchall()]
-        if not columns: return pd.DataFrame() # Return empty if no columns
+        if not columns: return pd.DataFrame()
 
+        # Select all columns including country_code
         cursor.execute("SELECT * FROM erank_keyword_analyses ORDER BY analyzed_at DESC")
         rows = cursor.fetchall()
         df = pd.DataFrame(rows, columns=columns)
         if 'analyzed_at' in df.columns:
-            df['analyzed_at'] = pd.to_datetime(df['analyzed_at']).dt.strftime('%Y-%m-%d %H:%M')
+             df['analyzed_at'] = pd.to_datetime(df['analyzed_at']).dt.strftime('%Y-%m-%d %H:%M')
         return df
     except Exception as e:
         print(f"Error fetching ERANK analysis metadata: {e}")
@@ -440,44 +462,70 @@ def get_all_erank_analyses():
         conn.close()
 
 def get_all_erank_keywords():
-    """Retrieves all saved ERANK keywords from the database."""
+    """Retrieves all saved ERANK keywords joined with their analysis country."""
     conn = sqlite3.connect(DB_NAME)
     try:
+        # Use PRAGMA to get target columns for safety
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(erank_keywords)")
-        db_columns = [info[1] for info in cursor.fetchall()]
-        if not db_columns: 
-            print("Warning: erank_keywords table has no columns or does not exist?")
-            return pd.DataFrame()
+        kw_cols = [info[1] for info in cursor.fetchall()]
+        cursor.execute("PRAGMA table_info(erank_keyword_analyses)")
+        an_cols = [info[1] for info in cursor.fetchall()]
+        
+        if not kw_cols or 'analysis_id' not in kw_cols or 'id' not in kw_cols:
+             print("Warning: erank_keywords table missing required columns (id, analysis_id). Cannot fetch.")
+             return pd.DataFrame()
+        if 'country_code' not in an_cols or 'id' not in an_cols:
+             print("Warning: erank_keyword_analyses table missing required columns (id, country_code). Cannot fetch country.")
+             # Fallback: Fetch without country if analysis table is missing column
+             # You would need to implement get_all_erank_keywords_no_country() if needed
+             # For now, we'll raise or return empty if country column is missing after migration attempt
+             return pd.DataFrame() 
 
-        # Select relevant columns, including the renamed added_at
-        cursor.execute("""
-            SELECT id, analysis_id, keyword, added_at, avg_searches_str, avg_clicks_str, 
-                   avg_ctr_str, etsy_competition_str, google_searches_str 
-            FROM erank_keywords 
-            ORDER BY id ASC
-        """)
+        # Join tables to get country code
+        sql = """
+            SELECT 
+                k.id AS keyword_id, 
+                k.analysis_id, 
+                a.country_code, 
+                k.keyword, 
+                k.added_at, 
+                k.avg_searches_str, 
+                k.avg_clicks_str, 
+                k.avg_ctr_str, 
+                k.etsy_competition_str, 
+                k.google_searches_str 
+            FROM erank_keywords k
+            LEFT JOIN erank_keyword_analyses a ON k.analysis_id = a.id
+            ORDER BY k.id ASC
+        """
+        cursor.execute(sql)
         rows = cursor.fetchall()
         
-        # Define DataFrame column names, including 'Added At'
+        # Define DataFrame column names in the order of the SELECT statement
         df_columns = [
-            'keyword_id', 'analysis_id', 'Keyword', 'Added At', 'Avg Searches', 'Avg Clicks', 
-            'Avg CTR', 'Etsy Competition', 'Google Searches' 
+            'keyword_id', 'analysis_id', 'Country', 'Keyword', 'Added At', 
+            'Avg Searches', 'Avg Clicks', 'Avg CTR', 'Etsy Competition', 'Google Searches' 
         ]
         
-        # Ensure number of DataFrame columns matches fetched columns
-        if len(df_columns) != len(db_columns):
-             print(f"Warning: Mismatch between defined DataFrame columns ({len(df_columns)}) and DB columns ({len(db_columns)}) for erank_keywords.")
-             # Attempt to use DB columns if mismatch detected
-             if len(rows) > 0 and len(rows[0]) == len(db_columns):
-                  df_columns = db_columns
-             else: # Cannot construct DataFrame safely
-                 return pd.DataFrame()
-                 
         df = pd.DataFrame(rows, columns=df_columns)
+        
+        # Format Added At date
+        if 'Added At' in df.columns:
+            try: 
+                # Format to YYYY-MM-DD HH:MM:S (no microseconds)
+                df['Added At'] = pd.to_datetime(df['Added At'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S') 
+            except Exception as fmt_e:
+                print(f"Warning formatting Added At in get_all_erank_keywords: {fmt_e}")
+
         return df
     except Exception as e:
-        print(f"Error fetching all ERANK keywords: {e}")
+        print(f"Error fetching all ERANK keywords with country: {e}")
         return pd.DataFrame()
     finally:
-        conn.close() 
+        conn.close()
+
+# Fallback function placeholder (if needed for robustness)
+# def get_all_erank_keywords_no_country():
+#     # ... implementation to fetch without country join ...
+#     pass 

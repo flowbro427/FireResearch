@@ -792,64 +792,121 @@ def parse_erank_text_content(erank_text):
     Parses pasted text content from the ERANK Keyword Tool page using a procedural,
     chunk-based approach.
     Extracts Keyword, Avg. Searches, Avg. Clicks, Avg. CTR, Etsy Competition,
-    Google Searches, and the Seed Keyword.
-    Returns: tuple (seed_keyword, keywords_data_list) or (None, []) on failure.
+    Google Searches, the Seed Keyword, and the Country Code.
+    Returns: tuple (seed_keyword, country_code, keywords_data_list) or (None, None, []) on failure.
     """
     lines = [line.strip() for line in erank_text.strip().splitlines()] # Ensure lines are stripped
     keywords_data = []
     extracted_seed_keyword = None
+    extracted_country_code = None # <-- Initialize country code
     seed_keyword_line_index = -1
     data_start_index = -1
     data_end_index = len(lines)
 
-    # --- 1. Find Seed Keyword (Simplified Extraction) --- 
-    seed_line_prefix = "Keywords related to"
-    # Corrected quote char lists
-    quote_chars_open = ["\"", "'", "“"] # Fixed
-    quote_chars_close = ["\"", "'", "”"] # Fixed AGAIN
+    # --- 1. Find Seed Keyword (Simplified Extraction) ---
+    seed_line_prefix = "Keywords related to" 
+    # print(f"DEBUG ERANK: Checking for prefix: '{seed_line_prefix}'") # Keep commented for now
+    # print("DEBUG ERANK: First 50 lines after split/strip:") # Keep commented for now
+    # for idx, l in enumerate(lines[:50]):
+    #     print(f"  Line {idx}: '{l}'")
+        
+    # ENSURE Corrected quote char lists
+    quote_chars_open = ["\"", "'", "“"]
+    quote_chars_close = ["\"", "'", ""] # Correct closing quote
+        
     for i, line in enumerate(lines):
-        # REMOVED DEBUG PRINT for seed check
-        if line.strip().startswith(seed_line_prefix):
+        # print(f"DEBUG ERANK SEED CHECK: Line {i}: '{line}'") # Keep this commented
+        stripped_line = line.strip()
+        # Looser check: look for prefix, then find quotes shortly after
+        if stripped_line.startswith("Keywords related to"): 
+            print(f"DEBUG ERANK SEED FOUND PREFIX: Matched prefix on line {i}. Content: '{line}'")
             try:
-                # Find first opening quote after prefix
-                prefix_end_index = line.find(seed_line_prefix) + len(seed_line_prefix)
+                # Find where the prefix actually ends
+                prefix_actual_end = stripped_line.find(seed_line_prefix) + len(seed_line_prefix)
+                
+                # Now search for the first opening quote *after* the prefix end
                 first_quote_index = -1
+                opening_quote_char = None
                 for quote in quote_chars_open:
-                    idx = line.find(quote, prefix_end_index)
+                    # Start search from prefix_actual_end
+                    idx = stripped_line.find(quote, prefix_actual_end)
                     if idx != -1:
+                        # Check if this is the first quote found *or* closer than previous finds
                         if first_quote_index == -1 or idx < first_quote_index:
                             first_quote_index = idx
+                            opening_quote_char = quote
                 
-                # Find last closing quote on the line
-                last_quote_index = -1
-                for quote in quote_chars_close:
-                    idx = line.rfind(quote)
-                    if idx != -1 and idx > first_quote_index: # Ensure it's after the first quote
-                         if last_quote_index == -1 or idx > last_quote_index:
-                             last_quote_index = idx
-                
-                if first_quote_index != -1 and last_quote_index != -1:
-                    keyword_part = line[first_quote_index + 1 : last_quote_index].strip()
+                # If no opening quote found shortly after prefix, skip this line
+                if first_quote_index == -1 or first_quote_index > prefix_actual_end + 5: # Allow a few spaces
+                    print(f"DEBUG ERANK SEED: Found prefix but no opening quote nearby on line {i}.")
+                    continue # Move to next line
+
+                # Find the first corresponding closing quote *after* the opening one
+                closing_quote_index = -1
+                if opening_quote_char:
+                    matching_close_quote = None
+                    if opening_quote_char == '"':
+                        matching_close_quote = '"'
+                    elif opening_quote_char == "'":
+                        matching_close_quote = "'"
+                    elif opening_quote_char == '“': # Add missing check for opening smart quote
+                        matching_close_quote = '”' # Map to closing smart quote
+                    
+                    if matching_close_quote:
+                         idx_match = stripped_line.find(matching_close_quote, first_quote_index + 1)
+                         if idx_match != -1:
+                             closing_quote_index = idx_match
+                    
+                    if closing_quote_index == -1: # Fallback if matching type not found
+                        for quote in quote_chars_close:
+                            idx = stripped_line.find(quote, first_quote_index + 1)
+                            if idx != -1:
+                                if closing_quote_index == -1 or idx < closing_quote_index:
+                                    closing_quote_index = idx
+
+                if closing_quote_index != -1:
+                    keyword_part = stripped_line[first_quote_index + 1 : closing_quote_index].strip()
                     if keyword_part:
                         extracted_seed_keyword = keyword_part
                         seed_keyword_line_index = i
-                        print(f"DEBUG ERANK: Found seed keyword '{extracted_seed_keyword}' at line {i} (Simplified Extraction)")
-                        break
+                        print(f"DEBUG ERANK: Found seed keyword '{extracted_seed_keyword}' at line {i} (Looser Prefix Check)")
+                        break 
                 else:
-                    print(f"DEBUG ERANK: Found prefix line '{line}', but failed to find start/end quotes.")
-
+                    print(f"DEBUG ERANK: Found prefix and opening quote '{opening_quote_char}' but no closing quote on line {i}.")
             except Exception as e:
                 print(f"DEBUG ERANK: Error extracting seed keyword from line '{line}': {e}")
-                # Continue searching
 
     if seed_keyword_line_index == -1:
         print("DEBUG ERANK: Seed keyword line ('Keywords related to...') not found.")
-        return None, []
 
-    # --- 2. Find Data Start Marker --- 
+    # --- 1b. Find Country Code (Before data processing) ---
+    country_line_prefix = "Search Trends ("
+    for i, line in enumerate(lines):
+         # Limit search range reasonably (e.g., before expected data start)
+         # Increase limit slightly as it might appear after seed keyword line
+         if seed_keyword_line_index != -1 and i > seed_keyword_line_index + 30: # Heuristic limit
+              break
+         # If seed keyword wasn't found, search more broadly
+         if seed_keyword_line_index == -1 and i > 50: # Broader limit if no seed found
+              break
+              
+         if line.strip().startswith(country_line_prefix):
+             match = re.search(r'\((.*?)\)', line) # Find text within parentheses
+             if match and match.group(1):
+                 extracted_country_code = match.group(1).strip()
+                 print(f"DEBUG ERANK: Found country code '{extracted_country_code}' at line {i}")
+                 break # Found it, stop searching for country
+                 
+    if not extracted_country_code:
+         print("DEBUG ERANK: Country code ('Search Trends (XXX)') not found. Defaulting to Unknown.")
+         extracted_country_code = "Unknown"
+
+    # --- 2. Find Data Start Marker ---
     exclude_marker = "EXCLUDE KEYWORDS"
     exclude_marker_found = False
-    for i in range(seed_keyword_line_index + 1, len(lines) - 1): # Check up to second-to-last line
+    # Start search from beginning or after seed keyword if found
+    start_search_idx = seed_keyword_line_index + 1 if seed_keyword_line_index != -1 else 0
+    for i in range(start_search_idx, len(lines) - 1): # Check up to second-to-last line
         if lines[i] == exclude_marker:
              exclude_marker_found = True
              # Data should start 2 lines after this (skip the 0/5)
@@ -860,16 +917,18 @@ def parse_erank_text_content(erank_text):
                  break
              else:
                  print(f"DEBUG ERANK: Found '{exclude_marker}' but not enough lines after it.")
-                 return extracted_seed_keyword, [] # Cannot proceed
+                 # Return seed/country if found, but empty list as no data possible
+                 return extracted_seed_keyword, extracted_country_code, []
 
     if data_start_index == -1:
         if exclude_marker_found:
-             print(f"DEBUG ERANK: Found '{exclude_marker}' but failed to set data start index.") # Should not happen if check above works
+             print(f"DEBUG ERANK: Found '{exclude_marker}' but failed to set data start index.")
         else:
              print(f"DEBUG ERANK: Data start marker ('{exclude_marker}') not found after seed keyword line.")
-        return extracted_seed_keyword, []
+        # Return seed/country if found, but empty list as no data found
+        return extracted_seed_keyword, extracted_country_code, []
 
-    # --- 3. Find Data End Marker --- 
+    # --- 3. Find Data End Marker ---
     end_markers = ["Rows per page:", "Copyright ©"]
     for i in range(data_start_index, len(lines)):
         if any(marker in lines[i] for marker in end_markers):
@@ -879,44 +938,33 @@ def parse_erank_text_content(erank_text):
     if data_end_index == len(lines):
          print(f"DEBUG ERANK: No explicit end marker found. Parsing until end of text.")
 
-    # --- 4. Process Data Chunks (Expecting 9 lines per keyword) --- 
+    # --- 4. Process Data Chunks (Expecting 9 lines per keyword) ---
+    # ... (chunk processing loop remains the same) ...
     current_index = data_start_index
     while current_index < data_end_index:
         # Check if enough lines remain for a potential 9-line chunk
         if current_index + 8 >= data_end_index:
-            # REMOVED redundant print - summary below covers it
-            # print(f"DEBUG ERANK: Not enough lines remaining for a full chunk starting at {current_index}. Stopping.")
             break
 
         # --- Define the 9 lines for the current chunk ---
         line1_kw = lines[current_index]       # Keyword
         line2_date = lines[current_index + 1]   # Date (Not used anymore but part of structure)
         line3_trend = lines[current_index + 2]  # Trend
-        line4_counts = lines[current_index + 3] # Char Count \t Tag Occurrences
+        line4_counts = lines[current_index + 3] # Char Count 	 Tag Occurrences
         line5_search = lines[current_index + 4] # Avg Searches
         line6_clicks = lines[current_index + 5] # Avg Clicks
         line7_ctr = lines[current_index + 6]    # Avg CTR
         line8_comp = lines[current_index + 7]   # Etsy Competition
         line9_goog = lines[current_index + 8]   # Google Searches
 
-        # REMOVED detailed chunk processing prints
-        # print(f"\nDEBUG ERANK Chunk Processing: Index {current_index}")
-        # print(f" L1 Kw: '{line1_kw}'")
-        # print(f" L4 Cts: '{line4_counts}'")
-        # print(f" L5 Srch: '{line5_search}'")
-        # print(f" L6 Clk: '{line6_clicks}'")
-        # print(f" L7 CTR: '{line7_ctr}'")
-        # print(f" L8 Comp: '{line8_comp}'")
-        # print(f" L9 Goog: '{line9_goog}'")
-
         # --- Basic Validation of Chunk Structure ---
         is_likely_keyword = bool(re.search(r'[a-zA-Z]', line1_kw)) and not line1_kw.replace(' ', '').isdigit()
-        has_tab_in_line4 = '\t' in line4_counts
-        is_likely_google = bool(re.match(r'^[\d,]+$|^N/A$|^Unknown$', line9_goog, re.IGNORECASE))
+        has_tab_in_line4 = '\t' in line4_counts # Check for literal tab character
+        # More robust check for line 4 format like '18	26'
+        counts_match = re.match(r'^\d+\s+\d+$', line4_counts)
+        is_likely_google = bool(re.match(r'^([\d,]+|N/A|Unknown)$', line9_goog, re.IGNORECASE))
 
-        if is_likely_keyword and has_tab_in_line4 and is_likely_google:
-            # REMOVED print
-            # print("DEBUG ERANK Chunk: Structure looks valid. Extracting...")
+        if is_likely_keyword and counts_match and is_likely_google:
             try:
                 keyword_entry = {
                     'Keyword': line1_kw,
@@ -927,22 +975,23 @@ def parse_erank_text_content(erank_text):
                     'Google Searches': line9_goog
                 }
                 keywords_data.append(keyword_entry)
-                # REMOVED print
-                # print(f"DEBUG ERANK Chunk: Success -> {keyword_entry}")
                 current_index += 9 # Move to the next potential chunk
             except Exception as e:
                 print(f"DEBUG ERANK Chunk: ERROR extracting data from valid-looking chunk at index {current_index}: {e}")
-                current_index += 1 
+                current_index += 1
                 while current_index < data_end_index and not lines[current_index]: current_index += 1
         else:
-            # REMOVED print
+            # Debugging invalid structure detection
             # print(f"DEBUG ERANK Chunk: Invalid structure detected at index {current_index}. Skipping line.")
-            # print(f"  (LikelyKeyword: {is_likely_keyword}, TabLine4: {has_tab_in_line4}, LikelyGoog: {is_likely_google})")
+            # print(f"  L1 Kw: '{line1_kw}' (Likely:{is_likely_keyword})")
+            # print(f"  L4 Cts: '{line4_counts}' (Tab:{has_tab_in_line4}, Match:{bool(counts_match)})")
+            # print(f"  L9 Goog: '{line9_goog}' (Likely:{is_likely_google})")
             current_index += 1
             while current_index < data_end_index and not lines[current_index]: current_index += 1
 
-    print(f"\nERANK Summary: Parsing loop finished. Extracted {len(keywords_data)} keyword entries.") # Keep summary
-    return extracted_seed_keyword, keywords_data
+
+    print(f"\nERANK Summary: Parsing loop finished. Extracted {len(keywords_data)} keyword entries.")
+    return extracted_seed_keyword, extracted_country_code, keywords_data # <-- Return country code
 
 def clean_erank_value(val_str):
     if val_str is None: return np.nan
@@ -1212,26 +1261,25 @@ with tab2:
     st.text_input("Seed Keyword (auto-detected, editable)", key="erank_seed_keyword")
     pasted_erank_text_input = st.text_area("Paste Full ERANK Page Text Content Here:", height=250, key='pasted_erank_text')
 
-    # --- Analysis Button --- 
+    # --- Analysis Button ---
     if st.button("Analyze Pasted ERANK Text", key="analyze_erank_button"):
         if st.session_state.pasted_erank_text:
             with st.spinner("Parsing and Analyzing ERANK text..."):
                 try:
-                    # 1. Parse Raw Data - returns seed keyword, raw_data_list
-                    extracted_seed_keyword, parsed_erank_data = parse_erank_text_content(st.session_state.pasted_erank_text)
+                    # 1. Parse Raw Data - returns seed, country, raw_data_list
+                    extracted_seed_keyword, extracted_country_code, parsed_erank_data = parse_erank_text_content(st.session_state.pasted_erank_text)
                     
-                    # Store RAW data for potential saving
+                    # Store RAW data and country for potential saving
                     st.session_state['raw_erank_data'] = parsed_erank_data
+                    st.session_state['erank_country_code'] = extracted_country_code
                     
-                    # Update the seed keyword input field (read-only update via info msg)
-                    if extracted_seed_keyword:
-                        st.info(f"Auto-detected seed keyword: '{extracted_seed_keyword}'")
-                    else:
-                        st.info("Could not auto-detect seed keyword from text.") 
+                    # Display feedback using the *parsed* value, not the widget state
+                    st.info(f"Auto-detected seed keyword: '{extracted_seed_keyword or '(None Found)'}'")
+                    st.info(f"Detected Country: {st.session_state.erank_country_code}")
 
                     if parsed_erank_data:
                         # Process a COPY for current session display
-                        erank_df = pd.DataFrame(parsed_erank_data.copy()) 
+                        erank_df = pd.DataFrame(parsed_erank_data.copy())
                         st.info(f"ERANK text parsed! Found {len(erank_df)} raw keyword entries. Analyzing for current view...")
                         
                         # --- Apply Scoring for Current View --- 
@@ -1262,14 +1310,16 @@ with tab2:
                         st.warning("ERANK parsing failed to extract keyword data.")
                         st.session_state['erank_keywords_list'] = []
                         st.session_state['raw_erank_data'] = [] # Clear raw data too
+                        st.session_state['erank_country_code'] = None # Clear country code too
                 except Exception as e:
                     st.error(f"ERANK Analysis Error: {e}")
                     st.session_state['erank_keywords_list'] = []
                     st.session_state['raw_erank_data'] = [] # Clear raw data on error
+                    st.session_state['erank_country_code'] = None # Clear country code on error
         else: 
             st.warning("Please paste ERANK text.")
 
-    # --- Display Analyzed ERANK data (Current Session) ---
+    # --- Display Analyzed ERANK data (Current Session) --- 
     st.subheader("Analyzed Keywords (Current Session)")
     if st.session_state.get('erank_keywords_list'):
         erank_display_df_current = pd.DataFrame(st.session_state['erank_keywords_list'])
@@ -1294,13 +1344,17 @@ with tab2:
             current_raw_data = st.session_state.get('raw_erank_data', [])
             current_weights = {'w_searches': st.session_state.w_searches, 'w_ctr': st.session_state.w_ctr, 'w_comp': st.session_state.w_comp}
             # Get seed keyword from the input box at the time of saving
-            seed_keyword = st.session_state.erank_seed_keyword or None 
+            seed_keyword = st.session_state.erank_seed_keyword or None
+            # Get country code from session state (populated during analysis)
+            country_code = st.session_state.get('erank_country_code', 'Unknown') 
             
             if current_raw_data:
-                # Call updated db function with RAW data
-                saved_analysis_id = db.add_erank_analysis(seed_keyword, current_weights, current_raw_data)
+                # Call updated db function with RAW data and country code
+                saved_analysis_id = db.add_erank_analysis(seed_keyword, country_code, current_weights, current_raw_data)
                 if saved_analysis_id:
-                     st.success(f"Saved analysis metadata (ID: {saved_analysis_id}) and {len(current_raw_data)} raw keywords.")
+                     st.success(f"Saved analysis metadata (ID: {saved_analysis_id}, Country: {country_code}) and {len(current_raw_data)} raw keywords.")
+                     # Refresh the global keywords display after saving
+                     st.rerun()
                 else: 
                     st.error("Failed to save ERANK analysis metadata and keywords.")
             else: 
@@ -1312,7 +1366,7 @@ with tab2:
     st.divider()
     st.subheader("Global Keyword Analysis (All Saved Raw Data)")
     
-    all_keywords_df = db.get_all_erank_keywords()
+    all_keywords_df = db.get_all_erank_keywords() # Now includes Country column
     
     if all_keywords_df.empty:
         st.info("No keywords saved to the database yet. Save data from a session above.")
@@ -1344,30 +1398,25 @@ with tab2:
                 
                 df_sorted_global = df_processed.sort_values(by='Opportunity Score', ascending=False, na_position='last')
                 
+                # Add Country to the display columns
                 display_columns_global = [
-                    'Opportunity Score', 'Keyword', 'Added At', 'Avg Searches', 'Avg CTR', 
+                    'Opportunity Score', 'Keyword', 'Country', 'Added At', 'Avg Searches', 'Avg CTR', 
                     'Etsy Competition', 'Avg Clicks', 'Google Searches', 
                     'analysis_id', 'keyword_id' 
                 ]
                 df_display_global = df_sorted_global[[col for col in display_columns_global if col in df_sorted_global.columns]].copy() # Create copy for display formatting
                 
-                # REMOVED DEBUG print for unique dates
-                # if 'Added At' in df_display_global.columns:
-                #     try:
-                #         unique_dates = df_display_global['Added At'].unique()
-                #         print(f"DEBUG APP: Unique 'Added At' values BEFORE conversion: {unique_dates}")
-                #     except Exception as e:
-                #         print(f"DEBUG APP: Error getting unique dates: {e}")
-
                 # Format Opportunity Score and Added At date (using .loc)
                 if 'Opportunity Score' in df_display_global.columns:
-                    try: 
-                        df_display_global.loc[:, 'Opportunity Score'] = pd.to_numeric(df_display_global['Opportunity Score'], errors='coerce').map(lambda x: f'{x:.3f}' if pd.notna(x) else 'N/A')
+                    try:
+                         # Convert to numeric first, handling errors, then format
+                         scores_numeric = pd.to_numeric(df_display_global['Opportunity Score'], errors='coerce')
+                         df_display_global.loc[:, 'Opportunity Score'] = scores_numeric.map(lambda x: f'{x:.3f}' if pd.notna(x) else 'N/A')
                     except Exception as fmt_e: 
                         print(f"Warning: Could not format Score for global display: {fmt_e}")
                 if 'Added At' in df_display_global.columns:
                     try:
-                        # Use .loc; Removed deprecated infer_datetime_format=True
+                        # Use .loc; Format as YYYY-MM-DD only
                         df_display_global.loc[:, 'Added At'] = pd.to_datetime(df_display_global['Added At'], errors='coerce').dt.strftime('%Y-%m-%d') 
                     except Exception as fmt_e:
                         print(f"Warning: Could not format Added At date for global display: {fmt_e}")
@@ -1377,14 +1426,22 @@ with tab2:
             except Exception as e:
                 st.error(f"Error analyzing all saved keywords: {e}")
 
-    # --- Display Past Analysis Metadata (Optional) ---
+    # --- Display Past Analysis Metadata (Optional) --- 
     with st.expander("View Past Analysis Session Metadata", expanded=False):
-        past_analyses_df = db.get_all_erank_analyses()
+        past_analyses_df = db.get_all_erank_analyses() # Now includes country_code
         if past_analyses_df.empty: 
             st.info("No past analysis metadata saved.")
         else:
+            display_cols_meta = ['id', 'analyzed_at', 'seed_keyword', 'country_code', 'weights'] # Add country_code here
+            df_display_meta = past_analyses_df[[col for col in display_cols_meta if col in past_analyses_df.columns]]
             st.dataframe(
-                past_analyses_df[['id', 'analyzed_at', 'seed_keyword', 'weights']], # Show subset
-                column_config={ "id": "Analysis ID", "analyzed_at": "Date", "seed_keyword": "Seed", "weights": "Weights (JSON)" },
+                df_display_meta,
+                column_config={ 
+                     "id": "Analysis ID", 
+                     "analyzed_at": "Date", 
+                     "seed_keyword": "Seed", 
+                     "country_code": "Country", # Add column config
+                     "weights": "Weights (JSON)" 
+                 },
                 hide_index=True, use_container_width=True
             )
