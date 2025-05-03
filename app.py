@@ -361,177 +361,220 @@ def parse_everbee_text_content(page_text):
 
     # --- Define Helper Functions for Type Conversion FIRST ---
     def safe_int(val_str):
-        # print(f"DEBUG Everbee Helper: safe_int input='{val_str}'") # Reduce noise
+        # print(f"DEBUG safe_int: Input val_str = {repr(val_str)}") # DEBUG Removed
         if not val_str: return None
-        try: return int(re.sub(r'[^\d-]', '', str(val_str))) # Keep negative sign for potential edge cases
-        except (ValueError, TypeError): return None
-    
+        try: 
+            # Replace regex with simpler string replacement for commas
+            cleaned_str = str(val_str).replace(',', '')
+            # print(f"DEBUG safe_int: Cleaned string = {repr(cleaned_str)}") # DEBUG Removed
+            return int(cleaned_str)
+        except (ValueError, TypeError) as e:
+            # print(f"ERROR safe_int: Conversion failed for {repr(val_str)}. Exception: {e}") # DEBUG Removed
+            return None
+
     def safe_float(val_str, field_name="value"):
         # print(f"DEBUG Everbee Helper: safe_float input='{val_str}' for {field_name}") # Reduce noise
         if not val_str: return None
-        try: 
+        try:
             # Remove currency symbols, commas, handle potential spaces
-            cleaned = re.sub(r'[\$\£€,]', '', str(val_str)).strip()
+            cleaned = re.sub(r'[\\$\\£€,]', '', str(val_str)).strip()
             return float(cleaned)
-        except (ValueError, TypeError): 
+        except (ValueError, TypeError):
             # print(f"DEBUG Everbee Helper: safe_float ValueError for '{val_str}' ('{cleaned}')") # Reduce noise
             return None
 
-    # Helper specific for Monthly Revenue comparison
-    def get_revenue_float(revenue_str):
-        return safe_float(revenue_str, field_name="Mo. Revenue")
+    # Helper specific for Monthly Revenue comparison - Not needed if not comparing rows
+    # def get_revenue_float(revenue_str):
+    #     return safe_float(revenue_str, field_name="Mo. Revenue")
 
-    # --- Initialize Output --- 
-    parsed_data = {} 
+    # --- Initialize Output ---
+    parsed_data = {}
     notes = []
-    all_listings_data = [] # To store data parsed from the main table
+    all_listings_data = [] # Reinstated: To store data parsed from the table
     table_start_index = -1
     table_end_index = num_lines
     header_line_index = -1 # Add variable to store header index
 
-    # --- Step 1: Find Table Boundaries (Revised) --- 
-    print("\nDEBUG Everbee Table: Searching for table boundaries (Revised)...")
-    # Find Start Marker (Look for Button markers first, then the Header row)
+    # --- Step 1: Find Table Boundaries (Simplified Header Detection) ---
+    print("\\nDEBUG Everbee Table: Searching for table boundaries (Simplified)...")
+    # Find Start Marker (Look for Buttons, then simple "Product" header)
     start_keywords = ["Customize button in Toolbar", "Filter button in Toolbar", "Export button in Toolbar"]
-    header_keywords = ["Product", "Shop Name", "Price", "Mo. Sales", "Mo. Revenue", "Total Sales"] 
+    header_keyword = "Product" # Simpler header check
     button_marker_index = -1
 
     for i, line in enumerate(lines):
-        if any(kw in line for kw in start_keywords): # Looser check for button markers
-            print(f"DEBUG Everbee Table: Found button marker indicator near line {i}: '{line}'")
+        if any(kw in line for kw in start_keywords):
             button_marker_index = i
-            # Now look for the actual header row *after* the button marker
+            print(f"DEBUG Everbee Table: Found button marker indicator near line {i}: '{line}'")
+            # Now look for the simpler "Product" header *after* the button marker
             for j in range(i + 1, min(i + 5, num_lines)): # Look a few lines ahead
-                 header_matches = sum(1 for hkw in header_keywords if hkw in lines[j])
-                 # Require a high number of matches AND the word "Product" to be more specific
-                 if header_matches >= 4 and "Product" in lines[j]: 
+                 if lines[j].strip() == header_keyword: # Exact match for "Product"
                      header_line_index = j
-                     print(f"DEBUG Everbee Table: Found likely header row at index {header_line_index}: '{lines[header_line_index]}'")
-                     table_start_index = header_line_index + 1 # Data starts AFTER header
+                     print(f"DEBUG Everbee Table: Found likely header '{header_keyword}' at index {header_line_index}: '{lines[header_line_index]}'")
+                     # Data starts potentially 2 lines after header (skipping potential image line)
+                     table_start_index = header_line_index + 1 # Start immediately after "Product" header
                      break
             if header_line_index != -1: break # Stop outer loop if header found
 
-    if table_start_index == -1: # If header wasn't found after buttons, use fallback
-        print("WARNING Everbee Table: Could not find header row after button markers. Using fallback index.")
-        table_start_index = 27 # Keep fallback, but log it
-        print(f"DEBUG Everbee Table: Using fallback start index: {table_start_index}")
-    else:
-        print(f"DEBUG Everbee Table: Setting table start index to {table_start_index} (after detected header at {header_line_index})")
+    if table_start_index == -1:
+        print("ERROR Everbee Table: Could not find 'Product' header after button markers. Attempting fallback index.")
+        # Try finding "Product" anywhere in the first ~40 lines as a last resort
+        for i in range(min(40, num_lines)):
+            if lines[i].strip() == header_keyword:
+                table_start_index = i + 1
+                print(f"DEBUG Everbee Table: Found 'Product' header via fallback at index {i}. Start index: {table_start_index}")
+                break
+        if table_start_index == -1:
+             print("ERROR Everbee Table: Fallback failed. Cannot determine table start.")
+             # Optionally return here or continue, subsequent steps likely fail
+             # return None # Example: exit early if start not found
+             table_start_index = 27 # Keep absolute fallback but log error
 
-    # Find End Marker (Using improved regex matching)
-    end_keywords = [r"^Showing: \d+ of \d+$", r"^Listing Details$", r"^Tags$", r"^Related Searches$", r"^Keyword Score$"]
-    for i in range(table_start_index, num_lines):
+    # Find End Marker (Using improved regex matching - keep this)
+    end_keywords = [r"^Showing: \\d+ of \\d+$", r"^Listing Details$", r"^Tags$", r"^Related Searches$", r"^Keyword Score$"]
+    for i in range(max(0, table_start_index), num_lines): # Start search from valid start index
         if any(re.match(kw, lines[i], re.IGNORECASE) for kw in end_keywords):
             table_end_index = i
             print(f"DEBUG Everbee Table: Found end marker '{lines[i]}' at line {i}. Setting table end index.")
             break
 
     print(f"DEBUG Everbee Table: Final Table Parsing Range: Lines {table_start_index} to {table_end_index-1}")
-    # --- END Step 1 --- 
+    if table_start_index == -1 or table_start_index >= table_end_index:
+         print("ERROR Everbee Table: Invalid table range determined. Aborting table parse.")
+         # Proceed to parse other sections, but table data will be missing.
+    # --- END Step 1 ---
 
-    # --- Step 2 & 3: Parse Table Rows (Chunk-based Approach) --- 
-    print("\nDEBUG Everbee Table: Parsing rows using chunk-based approach...")
-    # Expected fields IN ORDER as they appear in the table screenshot/logs
+    # --- Step 2 & 3: Parse Table Rows (Chunk-based Approach - Guided by Screenshot) --- 
+    print("\nDEBUG Everbee Table: Parsing rows using chunk-based approach (Screenshot Guided)...")
+    # Expected fields IN ORDER based on the visual table screenshot
     # This order is critical for the chunk parsing
     expected_fields_in_order = [
-        ('Product', r'.+'),                            # Any non-empty title
-        ('Shop Name', r'^[A-Za-z0-9][A-Za-z0-9\s\-\'&]*[A-Za-z0-9]$'), # Existing shop name regex
-        ('Price', r'^[\$\£€][\d,.]+$'),             
-        ('Mo. Sales', r'^[\d,]+$'),              
-        ('Mo. Revenue', r'^[\$\£€][\d,.]+$'),       
-        ('Total Sales', r'^[\d,]+$'),             
-        ('Reviews', r'^[\d,]+$'),               
-        ('Listing Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),
-        ('Favorites', r'^[\d,]+$'),             
-        ('Avg. Reviews', r'^[\d,]+$'),           
-        ('Views', r'^[\d,]+$'),                 
-        ('Category', r'.+'),                   
-        ('Shop Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),
-        ('Visibility Score', r'^\d+%?$'),        
-        ('Conversion Rate', r'^[\d.]+%?$'),       
-        ('Total Shop Sales', r'^[\d,]+$'),        
-        ('Listing Type', r'^(Physical|Digital)$') 
+        # Col 1: Product Title (Matches any non-empty line, hopefully the title)
+        ('Product', r'.+'),
+        # Col 2: Shop Name (Specific regex for typical shop names)
+        ('Shop Name', r'^[A-Za-z0-9][A-Za-z0-9\s\-\'&]*[A-Za-z0-9]$'),
+        # Col 3: Price (Currency symbol followed by digits/commas/dots)
+        ('Price', r'^[\$\£€][\d,.]+$'),
+        # Col 4: Mo. Sales (Digits, optional commas)
+        ('Mo. Sales', r'^[\d,]+$'),
+        # Col 5: Mo. Revenue (Currency symbol followed by digits/commas/dots)
+        ('Mo. Revenue', r'^[\$\£€][\d,.]+$'),
+        # Col 6: Total Sales (Digits, optional commas)
+        ('Total Sales', r'^[\d,]+$'),
+        # Col 7: Reviews (Digits, optional commas)
+        ('Reviews', r'^[\d,]+$'),
+        # Col 8: Listing Age (Number, space, Mo. or months, case insensitive)
+        ('Listing Age', r'^\d+\s+(?:Mo\.?|months?)$', re.IGNORECASE),
+        # Col 9: Favorites (Digits, optional commas)
+        ('Favorites', r'^[\d,]+$'),
+        # Col 10: Avg. Reviews (Digits, optional commas)
+        ('Avg. Reviews', r'^[\d,]+$'),
+        # Col 11: Views (Digits, optional commas)
+        ('Views', r'^[\d,]+$'),
+        # Col 12: Category (Any non-empty text)
+        ('Category', r'.+'),
+        # Col 13: Shop Age (Number, space, Mo. or months, case insensitive)
+        ('Shop Age', r'^\d+\s+(?:Mo\.?|months?)$', re.IGNORECASE),
+        # Col 14: Visibility Score (Digits, optional %)
+        ('Visibility Score', r'^\d+%?$'),
+        # Col 15: Conversion Rate (Digits, dots, optional %)
+        ('Conversion Rate', r'^[\d.]+%?$'),
+        # Col 16: Total Shop Sales (Digits, optional commas)
+        ('Total Shop Sales', r'^[\d,]+$'),
+        # Col 17: Listing Type (Physical or Digital, case insensitive)
+        ('Listing Type', r'^(Physical|Digital)$', re.IGNORECASE)
     ]
-    num_expected_fields = len(expected_fields_in_order)
+    num_expected_fields = len(expected_fields_in_order) # Should be 17
     print(f"DEBUG Everbee Table Chunk: Expecting {num_expected_fields} fields per row chunk.")
 
-    i = table_start_index
-    while i < table_end_index:
-        # Check if enough lines remain for a potential chunk
-        if i + num_expected_fields > table_end_index:
-            print(f"DEBUG Everbee Table Chunk: Not enough lines remaining ({table_end_index - i}) for a full chunk of {num_expected_fields}. Stopping parse.")
-            break
-            
-        # Grab the potential chunk of lines for one listing
-        current_chunk = lines[i : i + num_expected_fields]
-        print(f"\nDEBUG Everbee Table Chunk: Processing potential chunk at index {i}, size {len(current_chunk)}.")
-        # print(f"DEBUG Everbee Table Chunk: Content: {current_chunk}") # Optional: Log chunk content
-        
-        parsed_chunk_data = {}
-        all_fields_found_in_chunk = True
-        
-        # Attempt to parse the expected fields from this chunk
-        for field_index, (field_name, field_regex) in enumerate(expected_fields_in_order):
-            line_to_check = current_chunk[field_index].strip()
-            match = re.match(field_regex, line_to_check, re.IGNORECASE)
-            if match:
-                 # Special handling for visibility score to just get the number
-                 if field_name == 'Visibility Score':
-                      vis_match = re.match(r'^(\d+)', line_to_check) # Extract just digits
-                      parsed_chunk_data[field_name] = vis_match.group(1) if vis_match else line_to_check
-                 else: 
-                     parsed_chunk_data[field_name] = line_to_check # Store raw matched string
-                 # print(f"DEBUG Everbee Table Chunk Parse:   -> Matched '{field_name}': '{parsed_chunk_data[field_name]}'") # Reduce noise
-            else:
-                print(f"WARNING Everbee Table Chunk Parse: Failed to match '{field_name}' (regex: {field_regex}) on line {field_index} of chunk (abs line {i+field_index}): '{line_to_check}'. Skipping chunk.")
-                all_fields_found_in_chunk = False
-                break # Stop parsing this chunk
+    if table_start_index != -1 and table_start_index < table_end_index:
+        i = table_start_index
+        while i < table_end_index:
+            # Check if enough lines remain for a potential chunk
+            if i + num_expected_fields > table_end_index:
+                print(f"DEBUG Everbee Table Chunk: Not enough lines remaining ({table_end_index - i}) for a full chunk of {num_expected_fields}. Stopping parse.")
+                break
 
-        # If all fields were found in the chunk, store it
-        if all_fields_found_in_chunk:
-            parsed_chunk_data['Mo. Revenue Num'] = get_revenue_float(parsed_chunk_data.get('Mo. Revenue'))
-            all_listings_data.append(parsed_chunk_data)
-            print(f"DEBUG Everbee Table Chunk Success: Successfully parsed chunk starting at line {i}.")
-            # print(f"DEBUG Everbee Table Chunk Success Data: {parsed_chunk_data}") # Optional
-            i += num_expected_fields # Advance by the number of fields parsed
-        else:
-            # If chunk parsing failed, advance by only 1 line to try realignment
-            print(f"DEBUG Everbee Table Chunk Skip: Advancing by 1 line due to chunk parse failure at index {i}.")
-            i += 1
+            # Grab the potential chunk of lines for one listing
+            current_chunk = lines[i : i + num_expected_fields]
+            print(f"\nDEBUG Everbee Table Chunk: Processing potential chunk at index {i}, size {len(current_chunk)}.")
+            # print(f"DEBUG Everbee Table Chunk: Content: {current_chunk}") # Optional: Log chunk content
+
+            parsed_chunk_data = {}
+            all_fields_found_in_chunk = True
+
+            # Attempt to parse the expected fields from this chunk
+            for field_index, field_info in enumerate(expected_fields_in_order):
+                field_name = field_info[0]
+                field_regex = field_info[1]
+                regex_flags = field_info[2] if len(field_info) > 2 else 0 # Get flags if provided
+
+                line_to_check = current_chunk[field_index].strip()
+                match = re.match(field_regex, line_to_check, regex_flags)
+                if match:
+                    # Special handling for visibility score to just get the number
+                    if field_name == 'Visibility Score':
+                        vis_match = re.match(r'^(\d+)', line_to_check) # Extract just digits
+                        parsed_chunk_data[field_name] = vis_match.group(1) if vis_match else line_to_check
+                    elif field_name == 'Conversion Rate': # Remove % from conversion rate for consistency
+                         parsed_chunk_data[field_name] = line_to_check.replace('%', '')
+                    else:
+                        parsed_chunk_data[field_name] = line_to_check # Store raw matched string
+                    # print(f"DEBUG Everbee Table Chunk Parse:   -> Matched '{field_name}': '{parsed_chunk_data[field_name]}'") # Reduce noise
+                else:
+                    print(f"WARNING Everbee Table Chunk Parse: Failed to match '{field_name}' (regex: {field_regex}) on line {field_index} of chunk (abs line {i+field_index}): '{line_to_check}'. Skipping chunk.")
+                    all_fields_found_in_chunk = False
+                    break # Stop parsing this chunk
+
+            # If all fields were found in the chunk, store it
+            if all_fields_found_in_chunk:
+                # Use safe_float for revenue calculation, handle potential errors
+                revenue_str = parsed_chunk_data.get('Mo. Revenue')
+                parsed_chunk_data['Mo. Revenue Num'] = safe_float(revenue_str)
+                all_listings_data.append(parsed_chunk_data)
+                print(f"DEBUG Everbee Table Chunk Success: Successfully parsed chunk starting at line {i}.")
+                # print(f"DEBUG Everbee Table Chunk Success Data: {parsed_chunk_data}") # Optional
+                i += num_expected_fields # Advance by the number of fields parsed
+            else:
+                # If chunk parsing failed, advance by only 1 line to try realignment
+                print(f"DEBUG Everbee Table Chunk Skip: Advancing by 1 line due to chunk parse failure at index {i}.")
+                i += 1
+    else:
+         print("WARNING Everbee Table: Skipping chunk parse due to invalid table range.")
 
     print(f"\nDEBUG Everbee Table: Finished parsing table rows. Found {len(all_listings_data)} potential listings.")
     if not all_listings_data:
-         print("ERROR Everbee Table: No listing data could be parsed from the table section!")
-    # --- END Step 2 & 3 --- 
+         print("ERROR Everbee Table: No valid listing data could be parsed from the table section!")
+    # --- END Step 2 & 3 ---
 
     # --- Step 4 & 5: Select Highest Revenue Row & Populate parsed_data --- 
+    # Reinstated logic
     print("\nDEBUG Everbee Select: Selecting highest revenue row...")
     highest_revenue_listing = None
     max_revenue = -1.0 # Use -1 to handle cases where revenue might be 0
-    
+
     if not all_listings_data:
         print("ERROR Everbee Select: Cannot select highest revenue, all_listings_data is empty.")
     else:
         # Find the listing with the maximum 'Mo. Revenue Num'
         for listing in all_listings_data:
-            revenue_num = listing.get('Mo. Revenue Num')
+            revenue_num = listing.get('Mo. Revenue Num') # Use the pre-calculated float
             if revenue_num is not None and revenue_num > max_revenue:
                 max_revenue = revenue_num
                 highest_revenue_listing = listing
 
     if highest_revenue_listing:
         print(f"DEBUG Everbee Select: Found highest revenue listing: Shop '{highest_revenue_listing.get('Shop Name')}' with Revenue Num '{highest_revenue_listing.get('Mo. Revenue Num')}'")
-        
+
         # --- Populate parsed_data FROM the selected highest_revenue_listing --- 
         print("DEBUG Everbee Select: Populating final parsed_data from selected listing...")
         # Mapping from table column name -> final parsed_data key and conversion function
-        # Conversion function is None if we just want the raw string from the table dict
         select_assignment_map = {
             'Product': ('product_title', None),
             'Shop Name': ('shop_name', None),
             'Price': ('price_str', None), # Keep raw string for form
             'Mo. Sales': ('monthly_sales', safe_int),
-            'Mo. Revenue': ('monthly_revenue_str_display', None), # Keep raw string
+            'Mo. Revenue': ('monthly_revenue_str_display', None), # Keep raw string for display
             'Total Sales': ('total_sales', safe_int),
             'Reviews': ('reviews', safe_int),
             'Listing Age': ('listing_age', None), # Keep raw string
@@ -542,10 +585,10 @@ def parse_everbee_text_content(page_text):
             'Shop Age': ('shop_age_overall', None), # Get Shop Age from table now!
             'Visibility Score': ('visibility_score', None),
             'Conversion Rate': ('conversion_rate', None),
-            # 'Total Shop Sales': ('total_shop_sales', safe_int), # Key not used in UI form directly? Check usage
-            'Listing Type': ('listing_type', None) 
+            'Total Shop Sales': ('total_shop_sales', safe_int),
+            'Listing Type': ('listing_type', None)
         }
-        
+
         for table_key, (target_key, conversion_func) in select_assignment_map.items():
             raw_value = highest_revenue_listing.get(table_key)
             if raw_value is not None:
@@ -559,17 +602,19 @@ def parse_everbee_text_content(page_text):
             else:
                 print(f"DEBUG Everbee Select Assign: Key '{table_key}' not found in highest revenue listing data. Assigning None to '{target_key}'.")
                 parsed_data[target_key] = None
-                
+
     else:
         print("ERROR Everbee Select: Could not determine highest revenue listing after checking parsed table data.")
         # Fallback: Maybe try the old label parsing method here? Or just return fewer fields?
         # For now, we proceed, and subsequent sections might fail or have missing data.
-    # --- END Step 4 & 5 --- 
+    # --- END Step 4 & 5 ---
 
-    # === COMMENTING OUT OLD LOGIC THAT WILL BE REPLACED BY TABLE PARSING ===
+    # --- Remove obsolete parsing sections based on screenshot showing single table ---
+    # --- Remove Part 2b: Targeted Label Parsing in "Listing Details" Section ---
+    # (Code from the previous version that parsed the "Listing Details" block is removed)
 
-    # --- Try to find Last 30 Days Sales (Trends data) --- 
-    # (Keep this section, but ensure it runs *after* table parsing and populates parsed_data)
+    # --- Try to find Last 30 Days Sales (Trends data) ---
+    # (Keep this section, ensure it runs *after* table parsing)
     print("\nDEBUG Everbee: Searching for 'Last 30 Days Sales' (Trends section)...")
     # ... (Trends search logic remains largely the same, but assigns to parsed_data) ...
     trends_search_start_index = -1 
@@ -883,8 +928,29 @@ def parse_everbee_text_content(page_text):
         print("DEBUG Everbee Details: 'More Details' header not found. Skipping details parsing.")
 
     # Assign compiled notes
-    parsed_data['notes'] = "\n".join(notes) 
+    parsed_data['notes'] = "\n".join(notes)
     print(f"DEBUG Everbee: Final notes compiled ({len(notes)} lines).")
+
+    # --- Final Pass: Search for Shop Age Overall if not found by heuristic ---
+    if 'shop_age_overall' not in parsed_data:
+        print("\nDEBUG Everbee Final Pass: Searching for Shop Age Overall...")
+        listing_age_val = parsed_data.get('listing_age') # Get listing age found earlier
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            age_match = re.match(r'^(\d+\s+(?:Mo\.?|months?))$', line_stripped, re.IGNORECASE)
+            if age_match:
+                potential_shop_age = age_match.group(1)
+                # Check if it's different from listing age (if listing age was found)
+                if potential_shop_age and potential_shop_age != listing_age_val:
+                    parsed_data['shop_age_overall'] = potential_shop_age
+                    print(f"DEBUG Everbee Final Pass: Found distinct Shop Age Overall '{potential_shop_age}' at line {i}")
+                    break # Stop after finding the first distinct match
+                # else:
+                    # print(f"DEBUG Everbee Final Pass: Found age '{potential_shop_age}' at line {i}, but it matches listing age or was empty. Skipping.")
+        if 'shop_age_overall' not in parsed_data:
+             print("DEBUG Everbee Final Pass: Shop Age Overall not found anywhere in text.")
+    else:
+         print("\nDEBUG Everbee Final Pass: Shop Age Overall already found by heuristic. Skipping final pass.")
 
     # Final check before returning
     print(f"\nDEBUG Everbee: Final parsed_data keys: {list(parsed_data.keys())}")
@@ -1449,14 +1515,37 @@ Products must target $30+ price points.
                             # Update relevant FORM fields in session state
                             st.session_state.opp_form_product_title = parsed_data.get('product_title', st.session_state.get('opp_form_product_title',''))
                             st.session_state.opp_form_shop_name = parsed_data.get('shop_name', st.session_state.get('opp_form_shop_name',''))
-                            st.session_state.opp_form_est_sales_str = str(parsed_data.get('monthly_sales', ''))
+
+                            # --- Debugging Area --- 
+                            key_to_check = 'monthly_sales'
+                            val_from_parsed = parsed_data.get(key_to_check, 'MISSING')
+                            print(f"DEBUG State Assign: Before assign opp_form_est_sales_str: parsed_data['{key_to_check}'] = {repr(val_from_parsed)}")
+                            st.session_state.opp_form_est_sales_str = str(val_from_parsed) if val_from_parsed != 'MISSING' else ''
+                            print(f"DEBUG State Assign: After assign opp_form_est_sales_str: session_state value = {repr(st.session_state.opp_form_est_sales_str)}")
+
+                            key_to_check = 'total_sales'
+                            val_from_parsed = parsed_data.get(key_to_check, 'MISSING')
+                            print(f"DEBUG State Assign: Before assign opp_form_total_sales_str: parsed_data['{key_to_check}'] = {repr(val_from_parsed)}")
+                            st.session_state.opp_form_total_sales_str = str(val_from_parsed) if val_from_parsed != 'MISSING' else ''
+                            print(f"DEBUG State Assign: After assign opp_form_total_sales_str: session_state value = {repr(st.session_state.opp_form_total_sales_str)}")
+
+                            key_to_check = 'views'
+                            val_from_parsed = parsed_data.get(key_to_check, 'MISSING')
+                            print(f"DEBUG State Assign: Before assign opp_form_views_str: parsed_data['{key_to_check}'] = {repr(val_from_parsed)}")
+                            st.session_state.opp_form_views_str = str(val_from_parsed) if val_from_parsed != 'MISSING' else ''
+                            print(f"DEBUG State Assign: After assign opp_form_views_str: session_state value = {repr(st.session_state.opp_form_views_str)}")
+
+                            key_to_check = 'favorites'
+                            val_from_parsed = parsed_data.get(key_to_check, 'MISSING')
+                            print(f"DEBUG State Assign: Before assign opp_form_favorites_str: parsed_data['{key_to_check}'] = {repr(val_from_parsed)}")
+                            st.session_state.opp_form_favorites_str = str(val_from_parsed) if val_from_parsed != 'MISSING' else ''
+                            print(f"DEBUG State Assign: After assign opp_form_favorites_str: session_state value = {repr(st.session_state.opp_form_favorites_str)}")
+                            # --- End Debugging Area ---
+
                             st.session_state.opp_form_est_revenue_str = parsed_data.get('monthly_revenue_str_display', str(parsed_data.get('monthly_revenue', '')))
-                            st.session_state.opp_form_total_sales_str = str(parsed_data.get('total_sales', ''))
-                            st.session_state.opp_form_views_str = str(parsed_data.get('views', ''))
-                            st.session_state.opp_form_favorites_str = str(parsed_data.get('favorites', ''))
-                            st.session_state.opp_form_conversion_rate = parsed_data.get('conversion_rate', st.session_state.get('opp_form_conversion_rate',''))
+                            st.session_state.opp_form_conversion_rate = parsed_data.get('conversion_rate', st.session_state.get('opp_form_conversion_rate','')) # Correctly strips % in parser
                             st.session_state.opp_form_listing_age = parsed_data.get('listing_age', st.session_state.get('opp_form_listing_age',''))
-                            st.session_state.opp_form_shop_age_overall = parsed_data.get('shop_age_overall', st.session_state.get('opp_form_shop_age_overall',''))
+                            st.session_state.opp_form_shop_age_overall = parsed_data.get('shop_age_overall', st.session_state.get('opp_form_shop_age_overall','')) # Assign parsed shop age
                             st.session_state.opp_form_category = parsed_data.get('category', st.session_state.get('opp_form_category',''))
                             st.session_state.opp_form_listing_type = parsed_data.get('listing_type', st.session_state.get('opp_form_listing_type',''))
                             st.session_state.tags_list = parsed_data.get('tags_list', []) # Update general tags list
