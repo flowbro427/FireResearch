@@ -23,7 +23,31 @@ def generate_etsy_url(keyword, min_price=25):
 
 def clean_etsy_url(url):
     if not url or '?' not in url: return url
-    return url.split('?')[0]
+    # Ensure it handles potential missing protocol by adding it if needed for parsing
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url # Assume https
+    try:
+        parsed = urlparse(url)
+        # Reconstruct URL with only scheme, netloc, path
+        cleaned = urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+        # Remove trailing slash if present
+        if cleaned.endswith('/'):
+             cleaned = cleaned[:-1]
+        return cleaned
+    except ValueError:
+        # Handle potential errors during parsing/unparsing
+        print(f"Warning: Could not parse/clean URL: {url}")
+        return url # Return original on error
+
+def extract_shop_name_from_url(url):
+    """Extracts the shop name from a cleaned Etsy shop URL."""
+    if not url or not isinstance(url, str):
+        return None
+    # Regex to find /shop/ followed by the shop name characters
+    match = re.search(r'/shop/([A-Za-z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    return None
 
 def calculate_days_until_delivery(date_str):
     """Calculates days from today until the estimated delivery date/range."""
@@ -1863,6 +1887,84 @@ with tab2:
 # === High Performing Etsy Shops Tab === #
 # ==================================== #
 with tab3:
-    st.header("High Performing Etsy Shops")
-    st.info("Analysis of high-performing shops coming soon...")
-    # Add placeholders or initial structure here later
+    st.header("Saved Etsy Shops")
+
+    # --- Input Section using st.form ---
+    with st.form(key='save_shop_form', clear_on_submit=True):
+        input_col, button_col = st.columns([3, 1])
+        with input_col:
+            # Define the text input widget INSIDE the form
+            shop_url_input = st.text_input(
+                "Enter Etsy Shop URL to save:", 
+                key="saved_shop_url_input", # Key is still needed for state access
+                placeholder="e.g., https://www.etsy.com/shop/ShopName"
+            )
+        with button_col:
+            st.caption(" ") # Add space to align button vertically
+            # Define the submit button INSIDE the form
+            submitted = st.form_submit_button("💾 Save Shop")
+
+        # Process form submission OUTSIDE the column definitions but INSIDE the form context
+        if submitted:
+            url_to_save = st.session_state.saved_shop_url_input # Access state using key
+            
+            # Strip whitespace FIRST
+            if url_to_save: 
+                url_to_save = url_to_save.strip()
+
+            # Define the regex pattern for validation
+            etsy_shop_pattern = r"https?://(?:www\.)?etsy\.com/(?:[a-z]{2}/)?shop/[A-Za-z0-9_-]+"
+
+            if not url_to_save:
+                st.warning("Please enter a shop URL.")
+            # Use regex search for validation (case-insensitive)
+            elif not re.search(etsy_shop_pattern, url_to_save, re.IGNORECASE):
+                 st.warning("Please enter a valid Etsy shop URL (e.g., https://www.etsy.com/shop/ShopName).")
+            else:
+                # Clean the URL before saving (removes query params etc.)
+                cleaned_url = clean_etsy_url(url_to_save) 
+                print(f"DEBUG App Tab3: Attempting to save cleaned URL: {cleaned_url}")
+                
+                # Call the database function
+                success = db.add_saved_shop(cleaned_url)
+                
+                if success:
+                    st.success(f"Shop URL saved: {cleaned_url}")
+                    # NO NEED to clear manually due to clear_on_submit=True
+                    # Rerun to refresh the list displayed below the form
+                    st.rerun()
+                else:
+                    st.warning(f"Shop URL already exists or failed to save: {cleaned_url}")
+
+    # --- Display Section (remains outside the form) ---
+    st.divider()
+    st.subheader("Saved Shop List")
+    saved_shops_df = db.get_all_saved_shops()
+
+    if saved_shops_df.empty:
+        st.info("No shop URLs saved yet.")
+    else:
+        # --- Add Shop Name column --- 
+        saved_shops_df['Shop Name'] = saved_shops_df['shop_url'].apply(extract_shop_name_from_url)
+        # --- End Add --- 
+        
+        st.dataframe(
+            saved_shops_df,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "Shop Name": st.column_config.TextColumn("Shop Name", width="medium"), # Display the new column
+                "shop_url": st.column_config.LinkColumn(
+                    "Shop URL", 
+                    display_text="🔗 Open Shop", 
+                    width="large"
+                ),
+                "added_at": st.column_config.DatetimeColumn(
+                    "Saved On",
+                    format="YYYY-MM-DD HH:mm",
+                    width="medium"
+                )
+            },
+            column_order=("id", "Shop Name", "shop_url", "added_at"), # Add "Shop Name" to order
+            hide_index=True,
+            use_container_width=True
+        )

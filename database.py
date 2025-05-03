@@ -207,6 +207,16 @@ def initialize_db():
     except sqlite3.Error as e:
          print(f"Warning DB: Could not backfill NULL added_at values: {e}")
 
+    # --- ADDED: Create saved_shops table --- 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS saved_shops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_url TEXT NOT NULL UNIQUE, 
+        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    # --- END ADDED --- 
+
     conn.commit() # Final commit for any table creations/migrations earlier
     conn.close()
     print("Database initialized successfully.")
@@ -529,3 +539,42 @@ def get_all_erank_keywords():
 # def get_all_erank_keywords_no_country():
 #     # ... implementation to fetch without country join ...
 #     pass 
+
+# --- ADDED: Saved Shops Functions --- 
+def add_saved_shop(shop_url):
+    """Adds a new shop URL to the saved_shops table."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO saved_shops (shop_url) VALUES (?)", 
+            (shop_url,)
+        )
+        conn.commit()
+        inserted_id = cursor.lastrowid
+        print(f"DEBUG DB: Successfully added shop URL '{shop_url}' with ID: {inserted_id}")
+        conn.close()
+        return True
+    except sqlite3.IntegrityError: # Catch duplicate URL error
+        print(f"DEBUG DB: Shop URL '{shop_url}' already exists.")
+        conn.close()
+        return False
+    except Exception as e:
+        print(f"ERROR DB: Error adding saved shop URL '{shop_url}': {e}")
+        conn.rollback() # Rollback in case of other errors
+        conn.close()
+        return False
+
+def get_all_saved_shops():
+    """Retrieves all saved shop URLs from the database."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        query = "SELECT id, shop_url, added_at FROM saved_shops ORDER BY added_at DESC"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        print(f"DEBUG DB: Fetched {len(df)} saved shops.")
+        return df
+    except Exception as e:
+        print(f"ERROR DB: Error fetching saved shops: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
+# --- END ADDED --- 
