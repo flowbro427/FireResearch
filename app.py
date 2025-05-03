@@ -363,38 +363,38 @@ def parse_everbee_text_content(page_text):
     all_listings_data = [] # To store data parsed from the main table
     table_start_index = -1
     table_end_index = num_lines
+    header_line_index = -1 # Add variable to store header index
 
-    # --- Step 1: Find Table Boundaries --- 
-    print("\nDEBUG Everbee Table: Searching for table boundaries...")
-    # Find Start Marker (Look for lines just before the first product data)
-    # More robust: look for the line containing specific button text
+    # --- Step 1: Find Table Boundaries (Revised) --- 
+    print("\nDEBUG Everbee Table: Searching for table boundaries (Revised)...")
+    # Find Start Marker (Look for Button markers first, then the Header row)
     start_keywords = ["Customize button in Toolbar", "Filter button in Toolbar", "Export button in Toolbar"]
-    header_keywords = ["Product", "Shop Name", "Price", "Mo. Sales", "Mo. Revenue", "Total Sales"] # Keywords likely in header row
-    
-    potential_header_line_index = -1
-    for i, line in enumerate(lines):
-        # Check if line *IS* one of the button lines
-        if any(kw == line for kw in start_keywords):
-             print(f"DEBUG Everbee Table: Found button marker '{line}' at index {i}. Looking for header next...")
-             # Header should be within a few lines after the button line
-             for j in range(i + 1, min(i + 10, num_lines)): 
-                 # Check if this line looks like the header row (contains multiple header keywords)
-                 header_matches = sum(1 for hkw in header_keywords if hkw in lines[j])
-                 if header_matches >= 3: # If it contains at least 3 header keywords
-                     potential_header_line_index = j
-                     print(f"DEBUG Everbee Table: Found potential header row at index {potential_header_line_index}: '{lines[potential_header_line_index]}' ({header_matches} matches)")
-                     break
-             if potential_header_line_index != -1: break # Stop outer loop if header found
-    
-    if potential_header_line_index != -1: 
-        table_start_index = potential_header_line_index + 1 # Data starts *after* the header row
-        print(f"DEBUG Everbee Table: Setting table start index to {table_start_index} (after detected header)")
-    else:
-        print("WARNING Everbee Table: Could not find reliable table start markers (Buttons/Header). Parsing might be inaccurate.")
-        table_start_index = 27 # Fallback heuristic - check logs if this seems wrong
-        print(f"DEBUG Everbee Table: Using fallback start index: {table_start_index}")
+    header_keywords = ["Product", "Shop Name", "Price", "Mo. Sales", "Mo. Revenue", "Total Sales"] 
+    button_marker_index = -1
 
-    # Find End Marker (More specific markers)
+    for i, line in enumerate(lines):
+        if any(kw in line for kw in start_keywords): # Looser check for button markers
+            print(f"DEBUG Everbee Table: Found button marker indicator near line {i}: '{line}'")
+            button_marker_index = i
+            # Now look for the actual header row *after* the button marker
+            for j in range(i + 1, min(i + 5, num_lines)): # Look a few lines ahead
+                 header_matches = sum(1 for hkw in header_keywords if hkw in lines[j])
+                 # Require a high number of matches AND the word "Product" to be more specific
+                 if header_matches >= 4 and "Product" in lines[j]: 
+                     header_line_index = j
+                     print(f"DEBUG Everbee Table: Found likely header row at index {header_line_index}: '{lines[header_line_index]}'")
+                     table_start_index = header_line_index + 1 # Data starts AFTER header
+                     break
+            if header_line_index != -1: break # Stop outer loop if header found
+
+    if table_start_index == -1: # If header wasn't found after buttons, use fallback
+        print("WARNING Everbee Table: Could not find header row after button markers. Using fallback index.")
+        table_start_index = 27 # Keep fallback, but log it
+        print(f"DEBUG Everbee Table: Using fallback start index: {table_start_index}")
+    else:
+        print(f"DEBUG Everbee Table: Setting table start index to {table_start_index} (after detected header at {header_line_index})")
+
+    # Find End Marker (Using improved regex matching)
     end_keywords = [r"^Showing: \d+ of \d+$", r"^Listing Details$", r"^Tags$", r"^Related Searches$", r"^Keyword Score$"]
     for i in range(table_start_index, num_lines):
         if any(re.match(kw, lines[i], re.IGNORECASE) for kw in end_keywords):
@@ -405,97 +405,75 @@ def parse_everbee_text_content(page_text):
     print(f"DEBUG Everbee Table: Final Table Parsing Range: Lines {table_start_index} to {table_end_index-1}")
     # --- END Step 1 --- 
 
-    # --- Step 2 & 3: Parse Table Rows --- 
-    print("\nDEBUG Everbee Table: Parsing rows within identified range...")
+    # --- Step 2 & 3: Parse Table Rows (Chunk-based Approach) --- 
+    print("\nDEBUG Everbee Table: Parsing rows using chunk-based approach...")
+    # Expected fields IN ORDER as they appear in the table screenshot/logs
+    # This order is critical for the chunk parsing
+    expected_fields_in_order = [
+        ('Product', r'.+'),                            # Any non-empty title
+        ('Shop Name', r'^[A-Za-z0-9][A-Za-z0-9\s\-\'&]*[A-Za-z0-9]$'), # Existing shop name regex
+        ('Price', r'^[\$\£€][\d,.]+$'),             
+        ('Mo. Sales', r'^[\d,]+$'),              
+        ('Mo. Revenue', r'^[\$\£€][\d,.]+$'),       
+        ('Total Sales', r'^[\d,]+$'),             
+        ('Reviews', r'^[\d,]+$'),               
+        ('Listing Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),
+        ('Favorites', r'^[\d,]+$'),             
+        ('Avg. Reviews', r'^[\d,]+$'),           
+        ('Views', r'^[\d,]+$'),                 
+        ('Category', r'.+'),                   
+        ('Shop Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),
+        ('Visibility Score', r'^\d+%?$'),        
+        ('Conversion Rate', r'^[\d.]+%?$'),       
+        ('Total Shop Sales', r'^[\d,]+$'),        
+        ('Listing Type', r'^(Physical|Digital)$') 
+    ]
+    num_expected_fields = len(expected_fields_in_order)
+    print(f"DEBUG Everbee Table Chunk: Expecting {num_expected_fields} fields per row chunk.")
+
     i = table_start_index
     while i < table_end_index:
-        # --- Try to identify the start of a listing row --- 
-        # Heuristic: Look for a potentially long product title line,
-        # potentially following a "Product/Shop Image" line if present.
-        # Also check if the next line looks like a shop name.
-        
-        line1 = lines[i].strip()
-        is_potential_title = len(line1) > 20 and re.search(r'[a-zA-Z]', line1) # Min length and has letters
-        
-        # Check if the previous line was an image marker (optional context)
-        prev_line_is_image = i > 0 and "Product/Shop Image" in lines[i-1]
-        
-        # Look ahead for a potential shop name
-        potential_shop_name = None
-        if i + 1 < table_end_index:
-             line2 = lines[i+1].strip()
-             # Shop name regex: avoids purely numeric lines, allows typical chars
-             if re.match(r'^[A-Za-z0-9][A-Za-z0-9\s\-\'&]*[A-Za-z0-9]$', line2) and not line2.isdigit() and len(line2) > 3:
-                  potential_shop_name = line2
-
-        # If it looks like a title and the next line looks like a shop name, start parsing the row
-        if is_potential_title and potential_shop_name:
-            print(f"\nDEBUG Everbee Table Row Start: Potential row start detected at line {i}: Title='{line1}', Shop='{potential_shop_name}'")
-            current_listing = {'Product': line1, 'Shop Name': potential_shop_name}
-            lines_consumed = 2 # Title + Shop Name
-            current_index = i + lines_consumed
-
-            # --- Define expected fields and their simple validation/parsing --- 
-            # Order based on the Everbee table screenshot
-            expected_fields = [
-                ('Price', r'^[\$\£€][\d,.]+$'),              # Starts with currency symbol
-                ('Mo. Sales', r'^[\d,]+$'),                # Digits, commas allowed
-                ('Mo. Revenue', r'^[\$\£€][\d,.]+$'),          # Starts with currency symbol
-                ('Total Sales', r'^[\d,]+$'),               # Digits, commas allowed
-                ('Reviews', r'^[\d,]+$'),                 # Digits, commas allowed
-                ('Listing Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),# Digits + Mo./months
-                ('Favorites', r'^[\d,]+$'),               # Digits, commas allowed
-                ('Avg. Reviews', r'^[\d,]+$'),             # Digits, commas allowed (Assuming this is the '7'/'4'/'0')
-                ('Views', r'^[\d,]+$'),                   # Digits, commas allowed
-                ('Category', r'.+'),                     # Any non-empty string
-                ('Shop Age', r'^\d+\s+Mo\.?$|\d+\s+months?$'),  # Digits + Mo./months
-                ('Visibility Score', r'^\d+%?$'),          # Digits, maybe % (needs cleanup)
-                ('Conversion Rate', r'^[\d.]+%?$'),         # Digits, dot, maybe %
-                ('Total Shop Sales', r'^[\d,]+$'),          # Digits, commas allowed
-                ('Listing Type', r'^(Physical|Digital)$')   # Specific strings
-            ]
-
-            # --- Iterate through expected fields, consuming lines --- 
-            all_fields_found = True
-            for field_name, field_regex in expected_fields:
-                if current_index < table_end_index:
-                    line_to_check = lines[current_index].strip()
-                    match = re.match(field_regex, line_to_check, re.IGNORECASE)
-                    if match:
-                        # Special handling for visibility score to just get the number
-                        if field_name == 'Visibility Score':
-                             vis_match = re.match(r'^(\d+)', line_to_check) # Extract just digits
-                             current_listing[field_name] = vis_match.group(1) if vis_match else line_to_check
-                        else: 
-                            current_listing[field_name] = line_to_check # Store raw matched string
-                        print(f"DEBUG Everbee Table Row Parse:   -> Matched '{field_name}': '{current_listing[field_name]}' at line {current_index}")
-                        current_index += 1
-                        lines_consumed += 1
-                    else:
-                        print(f"WARNING Everbee Table Row Parse: Failed to match expected field '{field_name}' (regex: {field_regex}) at line {current_index}: '{line_to_check}'. Stopping row parse.")
-                        all_fields_found = False
-                        break # Stop parsing this row if structure breaks
-                else:
-                    print(f"WARNING Everbee Table Row Parse: Reached end of table data while looking for field '{field_name}'. Stopping row parse.")
-                    all_fields_found = False
-                    break # Stop parsing this row if end of table reached
+        # Check if enough lines remain for a potential chunk
+        if i + num_expected_fields > table_end_index:
+            print(f"DEBUG Everbee Table Chunk: Not enough lines remaining ({table_end_index - i}) for a full chunk of {num_expected_fields}. Stopping parse.")
+            break
             
-            # If all expected fields seemed to be found, add to list
-            if all_fields_found:
-                 # Add the numeric revenue for comparison
-                 current_listing['Mo. Revenue Num'] = get_revenue_float(current_listing.get('Mo. Revenue'))
-                 all_listings_data.append(current_listing)
-                 print(f"DEBUG Everbee Table Row Success: Successfully parsed row. Total lines consumed: {lines_consumed}. Data: {current_listing}")
-                 i = current_index # Move main loop index past the consumed lines
-                 continue # Start looking for the next row
-            else: 
-                 # If row parse failed midway, just advance by 1 to avoid infinite loop
-                 print(f"DEBUG Everbee Table Row Skip: Skipping potential row starting at line {i} due to parsing failure.")
-                 i += 1 
-                 continue
-                 
-        # If the current line didn't look like a title/shop combo, just advance
-        i += 1
+        # Grab the potential chunk of lines for one listing
+        current_chunk = lines[i : i + num_expected_fields]
+        print(f"\nDEBUG Everbee Table Chunk: Processing potential chunk at index {i}, size {len(current_chunk)}.")
+        # print(f"DEBUG Everbee Table Chunk: Content: {current_chunk}") # Optional: Log chunk content
+        
+        parsed_chunk_data = {}
+        all_fields_found_in_chunk = True
+        
+        # Attempt to parse the expected fields from this chunk
+        for field_index, (field_name, field_regex) in enumerate(expected_fields_in_order):
+            line_to_check = current_chunk[field_index].strip()
+            match = re.match(field_regex, line_to_check, re.IGNORECASE)
+            if match:
+                 # Special handling for visibility score to just get the number
+                 if field_name == 'Visibility Score':
+                      vis_match = re.match(r'^(\d+)', line_to_check) # Extract just digits
+                      parsed_chunk_data[field_name] = vis_match.group(1) if vis_match else line_to_check
+                 else: 
+                     parsed_chunk_data[field_name] = line_to_check # Store raw matched string
+                 # print(f"DEBUG Everbee Table Chunk Parse:   -> Matched '{field_name}': '{parsed_chunk_data[field_name]}'") # Reduce noise
+            else:
+                print(f"WARNING Everbee Table Chunk Parse: Failed to match '{field_name}' (regex: {field_regex}) on line {field_index} of chunk (abs line {i+field_index}): '{line_to_check}'. Skipping chunk.")
+                all_fields_found_in_chunk = False
+                break # Stop parsing this chunk
+
+        # If all fields were found in the chunk, store it
+        if all_fields_found_in_chunk:
+            parsed_chunk_data['Mo. Revenue Num'] = get_revenue_float(parsed_chunk_data.get('Mo. Revenue'))
+            all_listings_data.append(parsed_chunk_data)
+            print(f"DEBUG Everbee Table Chunk Success: Successfully parsed chunk starting at line {i}.")
+            # print(f"DEBUG Everbee Table Chunk Success Data: {parsed_chunk_data}") # Optional
+            i += num_expected_fields # Advance by the number of fields parsed
+        else:
+            # If chunk parsing failed, advance by only 1 line to try realignment
+            print(f"DEBUG Everbee Table Chunk Skip: Advancing by 1 line due to chunk parse failure at index {i}.")
+            i += 1
 
     print(f"\nDEBUG Everbee Table: Finished parsing table rows. Found {len(all_listings_data)} potential listings.")
     if not all_listings_data:
