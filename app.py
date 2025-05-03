@@ -1171,7 +1171,7 @@ st.title("🎯 Etsy Research Hub")
 st.caption("Track opportunities and analyze ERANK keywords.")
 
 # --- TABS ---
-tab1, tab2 = st.tabs(["Opportunity Tracker", "ERANK Keyword Analysis"])
+tab1, tab2, tab3 = st.tabs(["Opportunity Tracker", "ERANK Keyword Analysis", "High Performing Etsy Shops"])
 
 # =========================== #
 # === Opportunity Tracker Tab === #
@@ -1857,3 +1857,12 @@ with tab2:
                  },
                 hide_index=True, use_container_width=True
             )
+# End of Tab 2
+
+# ==================================== #
+# === High Performing Etsy Shops Tab === #
+# ==================================== #
+with tab3:
+    st.header("High Performing Etsy Shops")
+    st.info("Analysis of high-performing shops coming soon...")
+    # Add placeholders or initial structure here later
