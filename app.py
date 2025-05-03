@@ -325,637 +325,529 @@ def parse_everbee_text_content(page_text):
     # --- Initial Setup ---
     parsed_data = {}
     notes = []
-    print("\n--- DEBUG Everbee: Starting parse_everbee_text_content ---") # DEBUG Start
+    print("\\n--- DEBUG Everbee: Starting parse_everbee_text_content (Generalized Approach) ---") # DEBUG Start
 
-    # --- Normalize line breaks (Added Step) ---
-    print(f"DEBUG Everbee: Original page_text length: {len(page_text)}")
-    normalized_text = page_text.replace('\\n', '\n') # Replace literal \\n
-    print(f"DEBUG Everbee: Normalized text length: {len(normalized_text)}")
-    
-    # --- Split lines robustly ---
+    # --- Normalize & Split Lines (Keep Robust Logic) ---
+    # ... (existing normalization and splitting logic remains) ...
     try:
-        # Use splitlines() first, then strip and filter
+        normalized_text = page_text.replace('\\\\n', '\\n') # Replace literal \\n
         lines_unfiltered = normalized_text.splitlines()
         lines = [line.strip() for line in lines_unfiltered if line.strip()]
-        print(f"DEBUG Everbee: Split into {len(lines_unfiltered)} lines initially using splitlines().") # Log count before filter
+        num_lines = len(lines)
+        print(f"DEBUG Everbee: Processed {num_lines} non-empty lines.")
+        if not lines:
+            st.error("Error parsing Everbee text: No content found after splitting lines.")
+            print("ERROR Everbee: No non-empty lines found after splitting.")
+            return None
     except Exception as e:
         st.error(f"Error during robust line splitting: {e}")
         print(f"ERROR Everbee: Exception during robust line splitting: {e}")
         return None
+    # --- END Normalize & Split ---
 
-    # --- Log results of split --- 
-    if not lines:
-        st.error("Error parsing Everbee text: No content found after splitting lines.")
-        print("ERROR Everbee: No non-empty lines found after splitting.")
-        return None
-    else:
-        num_lines = len(lines)
-        print(f"DEBUG Everbee: Processed {num_lines} non-empty lines after splitlines() and strip().") # Updated log
-        # Reduce excessive logging for full text
-        # if num_lines < 20:
-        #     print(f"DEBUG Everbee: All lines after split: {lines}") # Log all if short
-        # else:
-        #     print(f"DEBUG Everbee: First 10 lines after split: {lines[:10]}") # Log first 10
-        #     print(f"DEBUG Everbee: Last 10 lines after split: {lines[-10:]}") # Log last 10
-    # --- End Log ---
-
-    # --- Define Helper Functions for Type Conversion FIRST ---
-    def safe_int(val_str):
-        # print(f"DEBUG safe_int: Input val_str = {repr(val_str)}") # DEBUG Removed
+    # --- Define Helper Functions (Keep) ---
+    # ... (safe_int, safe_float functions remain) ...
+    def safe_int(val_str): 
         if not val_str: return None
         try: 
-            # Replace regex with simpler string replacement for commas
             cleaned_str = str(val_str).replace(',', '')
-            # print(f"DEBUG safe_int: Cleaned string = {repr(cleaned_str)}") # DEBUG Removed
             return int(cleaned_str)
-        except (ValueError, TypeError) as e:
-            # print(f"ERROR safe_int: Conversion failed for {repr(val_str)}. Exception: {e}") # DEBUG Removed
-            return None
-
+        except (ValueError, TypeError): return None
     def safe_float(val_str, field_name="value"):
-        # print(f"DEBUG Everbee Helper: safe_float input='{val_str}' for {field_name}") # Reduce noise
         if not val_str: return None
         try:
-            # Remove currency symbols, commas, handle potential spaces
             cleaned = re.sub(r'[\\$\\£€,]', '', str(val_str)).strip()
             return float(cleaned)
-        except (ValueError, TypeError):
-            # print(f"DEBUG Everbee Helper: safe_float ValueError for '{val_str}' ('{cleaned}')") # Reduce noise
-            return None
+        except (ValueError, TypeError): return None
 
-    # Helper specific for Monthly Revenue comparison - Not needed if not comparing rows
-    # def get_revenue_float(revenue_str):
-    #     return safe_float(revenue_str, field_name="Mo. Revenue")
-
-    # --- Initialize Output ---
-    parsed_data = {}
-    notes = []
-    all_listings_data = [] # Reinstated: To store data parsed from the table
+    # --- Step 1: Flexible Boundary Detection (Attempt, but don't strictly enforce) ---
+    print("\\nDEBUG Everbee Boundaries: Attempting flexible boundary detection...")
     table_start_index = -1
-    table_end_index = num_lines
-    header_line_index = -1 # Add variable to store header index
-
-    # --- Step 1: Find Table Boundaries (Simplified Header Detection) ---
-    print("\\nDEBUG Everbee Table: Searching for table boundaries (Simplified)...")
-    # Find Start Marker (Look for Buttons, then simple "Product" header)
+    table_end_index = num_lines # Default to parsing everything if end not found
+    header_line_index = -1
     start_keywords = ["Customize button in Toolbar", "Filter button in Toolbar", "Export button in Toolbar"]
-    header_keyword = "Product" # Simpler header check
-    button_marker_index = -1
+    header_keyword = "Product"
+    end_keywords_regex = [r"^Showing: \\d+ of \\d+$", r"^Listing Details$", r"^Tags$", r"^Related Searches$", r"^Keyword Score$", r"^Trends$"] # Combined end markers
 
-    for i, line in enumerate(lines):
+    # Try finding button markers first
+    button_marker_index = -1
+    for i, line in enumerate(lines[:60]): # Limit initial search
         if any(kw in line for kw in start_keywords):
             button_marker_index = i
-            print(f"DEBUG Everbee Table: Found button marker indicator near line {i}: '{line}'")
-            # Now look for the simpler "Product" header *after* the button marker
-            for j in range(i + 1, min(i + 5, num_lines)): # Look a few lines ahead
-                 if lines[j].strip() == header_keyword: # Exact match for "Product"
-                     header_line_index = j
-                     print(f"DEBUG Everbee Table: Found likely header '{header_keyword}' at index {header_line_index}: '{lines[header_line_index]}'")
-                     # Data starts potentially 2 lines after header (skipping potential image line)
-                     table_start_index = header_line_index + 1 # Start immediately after "Product" header
-                     break
-            if header_line_index != -1: break # Stop outer loop if header found
+            print(f"DEBUG Everbee Boundaries: Found button marker near line {i}: '{line}'")
+            # Look for "Product" header shortly after
+            for j in range(i + 1, min(i + 10, num_lines)):
+                if lines[j].strip() == header_keyword:
+                    header_line_index = j
+                    table_start_index = header_line_index + 1 # Start after header
+                    print(f"DEBUG Everbee Boundaries: Found '{header_keyword}' header at index {header_line_index}. Tentative start index: {table_start_index}")
+                    break
+            if header_line_index != -1: break
+
+    # Fallback: Look for "Product" header anywhere early if button method failed
+    if table_start_index == -1:
+        for i in range(min(60, num_lines)): # Broader search
+            if lines[i].strip() == header_keyword:
+                header_line_index = i
+                table_start_index = header_line_index + 1
+                print(f"DEBUG Everbee Boundaries: Found '{header_keyword}' header via fallback at index {i}. Tentative start index: {table_start_index}")
+                break
 
     if table_start_index == -1:
-        print("ERROR Everbee Table: Could not find 'Product' header after button markers. Attempting fallback index.")
-        # Try finding "Product" anywhere in the first ~40 lines as a last resort
-        for i in range(min(40, num_lines)):
-            if lines[i].strip() == header_keyword:
-                table_start_index = i + 1
-                print(f"DEBUG Everbee Table: Found 'Product' header via fallback at index {i}. Start index: {table_start_index}")
-                break
-        if table_start_index == -1:
-             print("ERROR Everbee Table: Fallback failed. Cannot determine table start.")
-             # Optionally return here or continue, subsequent steps likely fail
-             # return None # Example: exit early if start not found
-             table_start_index = 27 # Keep absolute fallback but log error
+         print("WARNING Everbee Boundaries: Could not reliably determine table start via 'Product' header. Parsing will attempt labels from line 0.")
+         table_start_index = 0 # Default to start if no header found
 
-    # Find End Marker (Using improved regex matching - keep this)
-    end_keywords = [r"^Showing: \\d+ of \\d+$", r"^Listing Details$", r"^Tags$", r"^Related Searches$", r"^Keyword Score$"]
-    for i in range(max(0, table_start_index), num_lines): # Start search from valid start index
-        if any(re.match(kw, lines[i], re.IGNORECASE) for kw in end_keywords):
+    # Find the first occurrence of any end marker *after* the potential start
+    for i in range(table_start_index, num_lines):
+        if any(re.match(kw, lines[i], re.IGNORECASE) for kw in end_keywords_regex):
             table_end_index = i
-            print(f"DEBUG Everbee Table: Found end marker '{lines[i]}' at line {i}. Setting table end index.")
+            print(f"DEBUG Everbee Boundaries: Found potential end marker '{lines[i]}' at line {i}. Tentative table end index.")
             break
 
-    print(f"DEBUG Everbee Table: Final Table Parsing Range: Lines {table_start_index} to {table_end_index-1}")
-    if table_start_index == -1 or table_start_index >= table_end_index:
-         print("ERROR Everbee Table: Invalid table range determined. Aborting table parse.")
-         # Proceed to parse other sections, but table data will be missing.
-    # --- END Step 1 ---
+    print(f"DEBUG Everbee Boundaries: Tentative parsing range for labels: {table_start_index} to {table_end_index-1}")
+    # --- End Step 1 ---
 
-    # --- Step 2 & 3: Parse Table Rows (Chunk-based Approach - Guided by Screenshot) --- 
-    print("\nDEBUG Everbee Table: Parsing rows using chunk-based approach (Screenshot Guided)...")
-    # Expected fields IN ORDER based on the visual table screenshot
-    # This order is critical for the chunk parsing
-    expected_fields_in_order = [
-        # Col 1: Product Title (Matches any non-empty line, hopefully the title)
-        ('Product', r'.+'),
-        # Col 2: Shop Name (Specific regex for typical shop names)
-        ('Shop Name', r'^[A-Za-z0-9][A-Za-z0-9\s\-\'&]*[A-Za-z0-9]$'),
-        # Col 3: Price (Currency symbol followed by digits/commas/dots)
-        ('Price', r'^[\$\£€][\d,.]+$'),
-        # Col 4: Mo. Sales (Digits, optional commas)
-        ('Mo. Sales', r'^[\d,]+$'),
-        # Col 5: Mo. Revenue (Currency symbol followed by digits/commas/dots)
-        ('Mo. Revenue', r'^[\$\£€][\d,.]+$'),
-        # Col 6: Total Sales (Digits, optional commas)
-        ('Total Sales', r'^[\d,]+$'),
-        # Col 7: Reviews (Digits, optional commas)
-        ('Reviews', r'^[\d,]+$'),
-        # Col 8: Listing Age (Number, space, Mo. or months, case insensitive)
-        ('Listing Age', r'^\d+\s+(?:Mo\.?|months?)$', re.IGNORECASE),
-        # Col 9: Favorites (Digits, optional commas)
-        ('Favorites', r'^[\d,]+$'),
-        # Col 10: Avg. Reviews (Digits, optional commas)
-        ('Avg. Reviews', r'^[\d,]+$'),
-        # Col 11: Views (Digits, optional commas)
-        ('Views', r'^[\d,]+$'),
-        # Col 12: Category (Any non-empty text)
-        ('Category', r'.+'),
-        # Col 13: Shop Age (Number, space, Mo. or months, case insensitive)
-        ('Shop Age', r'^\d+\s+(?:Mo\.?|months?)$', re.IGNORECASE),
-        # Col 14: Visibility Score (Digits, optional %)
-        ('Visibility Score', r'^\d+%?$'),
-        # Col 15: Conversion Rate (Digits, dots, optional %)
-        ('Conversion Rate', r'^[\d.]+%?$'),
-        # Col 16: Total Shop Sales (Digits, optional commas)
-        ('Total Shop Sales', r'^[\d,]+$'),
-        # Col 17: Listing Type (Physical or Digital, case insensitive)
-        ('Listing Type', r'^(Physical|Digital)$', re.IGNORECASE)
-    ]
-    num_expected_fields = len(expected_fields_in_order) # Should be 17
-    print(f"DEBUG Everbee Table Chunk: Expecting {num_expected_fields} fields per row chunk.")
+    # --- Step 2: Heuristics for Title/Shop Name (Cautious) ---
+    print("\\nDEBUG Everbee Heuristic: Attempting Title/Shop heuristic...")
+    heuristic_start_line = table_start_index # Start search from where table might begin
+    product_title_heuristic = None
+    shop_name_heuristic = None
+    lines_processed_heuristic = 0
 
-    if table_start_index != -1 and table_start_index < table_end_index:
-        i = table_start_index
-        while i < table_end_index:
-            # Check if enough lines remain for a potential chunk
-            if i + num_expected_fields > table_end_index:
-                print(f"DEBUG Everbee Table Chunk: Not enough lines remaining ({table_end_index - i}) for a full chunk of {num_expected_fields}. Stopping parse.")
+    # Look for first non-numeric/non-common-label line as title
+    if heuristic_start_line < num_lines:
+        line1 = lines[heuristic_start_line]
+        # Simple check: not starting like a price/number and has letters
+        if not re.match(r'^[\\$\\£€\\d]', line1) and re.search(r'[a-zA-Z]', line1) and line1 != "Product/Shop Image":
+             product_title_heuristic = line1
+             print(f"DEBUG Everbee Heuristic: Tentative Product Title: '{product_title_heuristic}' (from line {heuristic_start_line})")
+             lines_processed_heuristic += 1
+             
+             # Look for shop name on the *next* line
+             next_line_idx = heuristic_start_line + 1
+             if next_line_idx < num_lines:
+                 line2 = lines[next_line_idx]
+                 # Check if it's NOT a price/number/age/etc.
+                 if not re.match(r'^[\\$\\£€\\d]', line2) and not re.match(r'^\d+\s+(Mo\.?|months?)$', line2, re.IGNORECASE) and re.search(r'[a-zA-Z]', line2):
+                     shop_name_heuristic = line2
+                     print(f"DEBUG Everbee Heuristic: Tentative Shop Name: '{shop_name_heuristic}' (from line {next_line_idx})")
+                     lines_processed_heuristic += 1
+                 else:
+                     print(f"DEBUG Everbee Heuristic: Line after title ('{line2}') looks like data, not shop name.")
+             else:
+                 print("DEBUG Everbee Heuristic: No line found after potential title.")
+        else:
+            print(f"DEBUG Everbee Heuristic: First line ('{line1}') doesn't look like a title.")
+    else:
+        print("DEBUG Everbee Heuristic: No lines available for heuristic.")
+
+    # Assign heuristic values ONLY if they aren't found later by labels
+    if product_title_heuristic: parsed_data['product_title'] = product_title_heuristic
+    if shop_name_heuristic: parsed_data['shop_name'] = shop_name_heuristic
+    # --- End Step 2 ---
+
+    # --- Step 3: Comprehensive Label-Value Matching ---
+    print("\\nDEBUG Everbee Label Match: Starting comprehensive label matching...")
+    # Combined map for table data AND potential "Listing Details" data
+    # Key: Label text (lowercase for matching)
+    # Value: (target_key_in_parsed_data, conversion_function or None, optional_validation_regex)
+    label_map = {
+        "price": ("price_str", None, r'^[$£€][\d,.]+$'), # Corrected Price regex too
+        "shop": ("shop_name", None, None), # Explicit shop label
+        "mo. sales": ("monthly_sales", safe_int, r'^[\d,]+$'),
+        "mo. revenue": ("monthly_revenue_str_display", None, r'^[$£€][\d,.]+$'), 
+        "total sales": ("total_sales", safe_int, r'^[\d,]+$'),
+        "listing age": ("listing_age", None, r'^\d+\s+(?:Mo\.?|months?)$'), # Keep raw string
+        "reviews": ("reviews", safe_int, r'^[\d,]+$'),
+        "views": ("views", safe_int, r'^[\d,]+$'),
+        "favorites": ("favorites", safe_int, r'^[\d,]+$'),
+        "mo. reviews": ("monthly_reviews", safe_int, r'^[\d,]+$'), # Often under "Listing Details"
+        "conversion rate": ("conversion_rate", None, r'^[\d.]+%?$'), # Store raw, strip % later if needed
+        "category": ("category", None, r'.+'), # Any non-empty
+        "visibility score": ("visibility_score", None, r'^\d+%?$'), # Store raw, strip % later if needed
+        "review ratio": ("review_ratio", None, r'^[\d.]+%?$'), # Often under "Listing Details"
+        # --- Screenshot specific labels ---
+        "shop age": ("shop_age_overall", None, r'^\d+\s+(?:Mo\.?|months?)$'), # Get from table if possible
+        "total shop sales": ("total_shop_sales", safe_int, r'^[\d,]+$'),
+        "listing type": ("listing_type", None, r'^(Physical|Digital)$'),
+        "avg. reviews": ("monthly_reviews", safe_int, r'^[\d,]+$') # Map screenshot "Avg. Reviews" to monthly_reviews
+    }
+
+    # Start loop *after* heuristic lines, but respect potential boundaries
+    # Use table_start_index as a guide but allow parsing beyond table_end_index if needed
+    parse_loop_start_index = table_start_index + lines_processed_heuristic
+    print(f"DEBUG Everbee Label Match: Starting loop from index {parse_loop_start_index}...")
+
+    i = parse_loop_start_index
+    while i < num_lines:
+        current_line = lines[i]
+        current_line_lower = current_line.lower() # Match labels case-insensitively
+        matched_label_info = None
+        label_text_matched = None
+
+        # Skip known noise explicitly first
+        if current_line == "Dots Svg":
+            print(f"DEBUG Everbee Label Match: Skipping noise line 'Dots Svg' at index {i}")
+            i += 1
+            continue
+
+        # Check if the current line IS a label
+        for label, info in label_map.items():
+            if current_line_lower == label:
+                matched_label_info = info
+                label_text_matched = label
                 break
 
-            # Grab the potential chunk of lines for one listing
-            current_chunk = lines[i : i + num_expected_fields]
-            print(f"\nDEBUG Everbee Table Chunk: Processing potential chunk at index {i}, size {len(current_chunk)}.")
-            # print(f"DEBUG Everbee Table Chunk: Content: {current_chunk}") # Optional: Log chunk content
+        if matched_label_info:
+            target_key, conversion_func, validation_regex = matched_label_info
+            print(f"DEBUG Everbee Label Match: Found label '{label_text_matched}' at line {i}. Target key: '{target_key}'")
 
-            parsed_chunk_data = {}
-            all_fields_found_in_chunk = True
+            # Look ahead for the value line(s)
+            value_line_index = i + 1
+            raw_value = None
+            lines_to_skip = 1 # Assume we skip label + value = 2 lines total
 
-            # Attempt to parse the expected fields from this chunk
-            for field_index, field_info in enumerate(expected_fields_in_order):
-                field_name = field_info[0]
-                field_regex = field_info[1]
-                regex_flags = field_info[2] if len(field_info) > 2 else 0 # Get flags if provided
+            if value_line_index < num_lines:
+                raw_value = lines[value_line_index]
+                print(f"DEBUG Everbee Label Match:   -> Potential value: '{raw_value}' (from line {value_line_index})")
 
-                line_to_check = current_chunk[field_index].strip()
-                match = re.match(field_regex, line_to_check, regex_flags)
-                if match:
-                    # Special handling for visibility score to just get the number
-                    if field_name == 'Visibility Score':
-                        vis_match = re.match(r'^(\d+)', line_to_check) # Extract just digits
-                        parsed_chunk_data[field_name] = vis_match.group(1) if vis_match else line_to_check
-                    elif field_name == 'Conversion Rate': # Remove % from conversion rate for consistency
-                         parsed_chunk_data[field_name] = line_to_check.replace('%', '')
-                    else:
-                        parsed_chunk_data[field_name] = line_to_check # Store raw matched string
-                    # print(f"DEBUG Everbee Table Chunk Parse:   -> Matched '{field_name}': '{parsed_chunk_data[field_name]}'") # Reduce noise
-                else:
-                    print(f"WARNING Everbee Table Chunk Parse: Failed to match '{field_name}' (regex: {field_regex}) on line {field_index} of chunk (abs line {i+field_index}): '{line_to_check}'. Skipping chunk.")
-                    all_fields_found_in_chunk = False
-                    break # Stop parsing this chunk
+                # Validate value if regex provided
+                if validation_regex and not re.match(validation_regex, raw_value, re.IGNORECASE):
+                    print(f"WARNING Everbee Label Match:   -> Value '{raw_value}' failed validation regex: {validation_regex}. Skipping assignment.")
+                    raw_value = None # Invalidate value
+                    lines_to_skip = 1 # Only skip the label line if value is bad/missing
 
-            # If all fields were found in the chunk, store it
-            if all_fields_found_in_chunk:
-                # Use safe_float for revenue calculation, handle potential errors
-                revenue_str = parsed_chunk_data.get('Mo. Revenue')
-                parsed_chunk_data['Mo. Revenue Num'] = safe_float(revenue_str)
-                all_listings_data.append(parsed_chunk_data)
-                print(f"DEBUG Everbee Table Chunk Success: Successfully parsed chunk starting at line {i}.")
-                # print(f"DEBUG Everbee Table Chunk Success Data: {parsed_chunk_data}") # Optional
-                i += num_expected_fields # Advance by the number of fields parsed
-            else:
-                # If chunk parsing failed, advance by only 1 line to try realignment
-                print(f"DEBUG Everbee Table Chunk Skip: Advancing by 1 line due to chunk parse failure at index {i}.")
-                i += 1
-    else:
-         print("WARNING Everbee Table: Skipping chunk parse due to invalid table range.")
+                # Assign if value is valid
+                if raw_value is not None:
+                    try:
+                        # Clean specific values before conversion/assignment
+                        if target_key == 'visibility_score' and isinstance(raw_value, str): raw_value = raw_value.replace('%', '')
+                        if target_key == 'conversion_rate' and isinstance(raw_value, str): raw_value = raw_value.replace('%', '')
+                        if target_key == 'review_ratio' and isinstance(raw_value, str): raw_value = raw_value.replace('%', '')
 
-    print(f"\nDEBUG Everbee Table: Finished parsing table rows. Found {len(all_listings_data)} potential listings.")
-    if not all_listings_data:
-         print("ERROR Everbee Table: No valid listing data could be parsed from the table section!")
-    # --- END Step 2 & 3 ---
+                        final_value = conversion_func(raw_value) if conversion_func else raw_value
 
-    # --- Step 4 & 5: Select Highest Revenue Row & Populate parsed_data --- 
-    # Reinstated logic
-    print("\nDEBUG Everbee Select: Selecting highest revenue row...")
-    highest_revenue_listing = None
-    max_revenue = -1.0 # Use -1 to handle cases where revenue might be 0
+                        # Logic to handle overwriting heuristics vs existing labeled data
+                        should_assign = True
+                        if target_key in parsed_data:
+                             # If target is shop_name and we found it via heuristic, allow overwrite
+                             if target_key == 'shop_name' and parsed_data.get('shop_name') == shop_name_heuristic and shop_name_heuristic != final_value:
+                                 print(f"INFO Everbee Label Assign: Overwriting heuristic shop '{shop_name_heuristic}' with labeled shop '{final_value}'")
+                             # If target is title and we found it via heuristic, allow overwrite
+                             elif target_key == 'product_title' and parsed_data.get('product_title') == product_title_heuristic and product_title_heuristic != final_value:
+                                 print(f"INFO Everbee Label Assign: Overwriting heuristic title '{product_title_heuristic}' with labeled title '{final_value}'")
+                             # Otherwise, generally avoid overwriting data already found via labels
+                             elif (target_key == 'shop_name' and parsed_data.get('shop_name') != shop_name_heuristic) or \
+                                  (target_key == 'product_title' and parsed_data.get('product_title') != product_title_heuristic):
+                                 print(f"DEBUG Everbee Label Assign: Key '{target_key}' already exists with labeled value '{parsed_data[target_key]}'. Skipping assignment of '{final_value}'.")
+                                 should_assign = False
+                             # Allow monthly_reviews overwrite (heuristic vs avg. reviews vs mo. reviews)
+                             elif target_key == 'monthly_reviews':
+                                  print(f"DEBUG Everbee Label Assign: Allowing overwrite for 'monthly_reviews'. Old: {parsed_data.get(target_key)}, New: {final_value}")
+                             else: # For other keys, avoid simple overwrite if already set
+                                  print(f"DEBUG Everbee Label Assign: Key '{target_key}' already set to '{parsed_data[target_key]}'. Skipping assignment of '{final_value}'.")
+                                  should_assign = False
 
-    if not all_listings_data:
-        print("ERROR Everbee Select: Cannot select highest revenue, all_listings_data is empty.")
-    else:
-        # Find the listing with the maximum 'Mo. Revenue Num'
-        for listing in all_listings_data:
-            revenue_num = listing.get('Mo. Revenue Num') # Use the pre-calculated float
-            if revenue_num is not None and revenue_num > max_revenue:
-                max_revenue = revenue_num
-                highest_revenue_listing = listing
+                        if should_assign:
+                            parsed_data[target_key] = final_value
+                            print(f"DEBUG Everbee Label Assign: Assigned '{target_key}' = {repr(final_value)}")
 
-    if highest_revenue_listing:
-        print(f"DEBUG Everbee Select: Found highest revenue listing: Shop '{highest_revenue_listing.get('Shop Name')}' with Revenue Num '{highest_revenue_listing.get('Mo. Revenue Num')}'")
+                    except Exception as assign_e:
+                        print(f" !!!!! ERROR Everbee Label Assign: Failed converting/assigning label '{label_text_matched}' (raw: {repr(raw_value)}) to '{target_key}': {assign_e}")
+                        # Don't assign None, just skip if conversion fails
+                    
+                    # We processed label and value
+                    lines_to_skip = 2
 
-        # --- Populate parsed_data FROM the selected highest_revenue_listing --- 
-        print("DEBUG Everbee Select: Populating final parsed_data from selected listing...")
-        # Mapping from table column name -> final parsed_data key and conversion function
-        select_assignment_map = {
-            'Product': ('product_title', None),
-            'Shop Name': ('shop_name', None),
-            'Price': ('price_str', None), # Keep raw string for form
-            'Mo. Sales': ('monthly_sales', safe_int),
-            'Mo. Revenue': ('monthly_revenue_str_display', None), # Keep raw string for display
-            'Total Sales': ('total_sales', safe_int),
-            'Reviews': ('reviews', safe_int),
-            'Listing Age': ('listing_age', None), # Keep raw string
-            'Favorites': ('favorites', safe_int),
-            'Avg. Reviews': ('monthly_reviews', safe_int), # Map Avg. Reviews column to monthly_reviews key
-            'Views': ('views', safe_int),
-            'Category': ('category', None),
-            'Shop Age': ('shop_age_overall', None), # Get Shop Age from table now!
-            'Visibility Score': ('visibility_score', None),
-            'Conversion Rate': ('conversion_rate', None),
-            'Total Shop Sales': ('total_shop_sales', safe_int),
-            'Listing Type': ('listing_type', None)
-        }
+            else: # No line found after label
+                print(f"WARNING Everbee Label Match: Found label '{label_text_matched}' but no value line followed.")
+                lines_to_skip = 1 # Skip only the label
 
-        for table_key, (target_key, conversion_func) in select_assignment_map.items():
-            raw_value = highest_revenue_listing.get(table_key)
-            if raw_value is not None:
-                try:
-                    final_value = conversion_func(raw_value) if conversion_func else raw_value
-                    parsed_data[target_key] = final_value
-                    print(f"DEBUG Everbee Select Assign: Assigned '{target_key}' = {repr(final_value)} (from table key '{table_key}')")
-                except Exception as assign_e:
-                    print(f" !!!!! ERROR Everbee Select Assign: Failed converting/assigning '{table_key}' (raw: {repr(raw_value)}) to '{target_key}': {assign_e}")
-                    parsed_data[target_key] = None # Assign None on error
-            else:
-                print(f"DEBUG Everbee Select Assign: Key '{table_key}' not found in highest revenue listing data. Assigning None to '{target_key}'.")
-                parsed_data[target_key] = None
+            i += lines_to_skip # Advance past label (and value if processed)
+            continue # Go to next iteration
 
-    else:
-        print("ERROR Everbee Select: Could not determine highest revenue listing after checking parsed table data.")
-        # Fallback: Maybe try the old label parsing method here? Or just return fewer fields?
-        # For now, we proceed, and subsequent sections might fail or have missing data.
-    # --- END Step 4 & 5 ---
+        # If line is not a label, just advance
+        i += 1
+    # --- End Step 3 ---
 
-    # --- Remove obsolete parsing sections based on screenshot showing single table ---
-    # --- Remove Part 2b: Targeted Label Parsing in "Listing Details" Section ---
-    # (Code from the previous version that parsed the "Listing Details" block is removed)
+    # --- Remove obsolete parsing sections (Old Table Chunking, Listing Details Separate Parse) ---
+    # (Code for fixed chunk parsing and separate details parsing is removed)
 
-    # --- Try to find Last 30 Days Sales (Trends data) ---
-    # (Keep this section, ensure it runs *after* table parsing)
-    print("\nDEBUG Everbee: Searching for 'Last 30 Days Sales' (Trends section)...")
-    # ... (Trends search logic remains largely the same, but assigns to parsed_data) ...
+    # --- Step 4: Parse Dedicated Sections (Trends, Tags, More Details) ---
+    # These sections have clearer boundaries and specific logic
+
+    # --- Trends (Keep Logic, ensure runs after main label parsing) ---
+    print("\\nDEBUG Everbee Trends: Searching for 'Last 30 Days Sales'...")
+    # ... (Existing robust Trends search logic remains) ...
     trends_search_start_index = -1 
     trends_search_end_index = num_lines 
-    # Find Trends section start more dynamically
-    for i, line in enumerate(lines):
+    for j, line in enumerate(lines): # Renamed loop variable
         if line.strip().lower() == 'trends':
-             trends_search_start_index = i + 1 # Start after the header
-             print(f"DEBUG Everbee Trends: Found 'Trends' header at line {i}. Starting search from {trends_search_start_index}")
+             trends_search_start_index = j + 1 
+             print(f"DEBUG Everbee Trends: Found 'Trends' header at line {j}.")
              break
-    
     if trends_search_start_index != -1:
-        # Limit end range (e.g., stop before Tags or More Details)
-        for i in range(trends_search_start_index, num_lines):
-            line_lower = lines[i].strip().lower()
-            if line_lower == 'tags' or line_lower == 'more details' or line_lower == 'related searches':
-                trends_search_end_index = i
-                print(f"DEBUG Everbee Trends: Found end marker '{line_lower}' at line {i}. Limiting search.")
+        for j in range(trends_search_start_index, num_lines): # Renamed loop variable
+            line_lower = lines[j].strip().lower()
+            if line_lower in ['tags', 'more details', 'related searches', 'listing details']: # Added listing details as end marker too
+                trends_search_end_index = j
+                print(f"DEBUG Everbee Trends: Found end marker '{line_lower}' at line {j}.")
                 break
-                
         print(f"DEBUG Everbee Trends: Search range lines {trends_search_start_index}-{trends_search_end_index-1}")
-        
-        last_30_sales_value_str = None # Store as string initially
-        # Use the existing correct logic to find the value
-        for i in range(trends_search_start_index, trends_search_end_index):
-            line_lower = lines[i].strip().lower()
-            
+        last_30_sales_value_str = None
+        # ... (Inner logic to find 'sales', number, 'revenue' sequence remains the same) ...
+        for k in range(trends_search_start_index, trends_search_end_index): # Renamed loop variable
+            line_lower = lines[k].strip().lower()
             if line_lower == 'sales':
-                # ... (Existing logic to find potential_sales_val and revenue_found_nearby) ... 
-                # Find potential_sales_val (numeric string) and revenue_found_nearby (boolean)
-                potential_sales_line_idx = -1
-                potential_sales_val = None 
-                revenue_found_nearby = False
-
-                # Look for the numeric sales value within the next ~3 lines
-                for j in range(i + 1, min(i + 4, trends_search_end_index)): # Use trends_search_end_index
-                    line_to_check = lines[j].strip()
-                    sales_val_match = re.match(r'^(\d+)$', line_to_check)
-                    if sales_val_match:
-                        potential_sales_val = sales_val_match.group(1) 
-                        potential_sales_line_idx = j 
-                        print(f"DEBUG Everbee Trends:    -> Potential sales number '{potential_sales_val}' found at line {j}")
-                        break 
-                    elif line_to_check.lower() == 'revenue': 
-                        print(f"DEBUG Everbee Trends:    -> Found 'Revenue' at line {j} BEFORE finding number. Invalidating.")
-                        potential_sales_val = None 
-                        break 
-
-                # If a potential sales number was found, look for 'Revenue' shortly AFTER it
-                if potential_sales_val is not None and potential_sales_line_idx != -1:
-                    for k in range(potential_sales_line_idx + 1, min(potential_sales_line_idx + 4, trends_search_end_index)): # Use trends_search_end_index
-                        line_after_sales = lines[k].strip().lower()
-                        if line_after_sales == 'revenue':
-                            revenue_found_nearby = True
-                            print(f"DEBUG Everbee Trends:    -> Found 'Revenue' at line {k} after sales number.")
-                            break 
-                
-                # Store if confirmed
-                if potential_sales_val is not None and revenue_found_nearby:
-                    last_30_sales_value_str = potential_sales_val # Store the confirmed string value
-                    print(f"DEBUG Everbee Trends: ===> CONFIRMED Last 30 Days Sales value: {last_30_sales_value_str} (from line {i}) <===") 
-                    break # Stop searching the trends section once confirmed
-                elif potential_sales_val is not None: 
-                     print(f"DEBUG Everbee Trends:  -> Found sales value {potential_sales_val} but did NOT find 'Revenue' nearby after line {potential_sales_line_idx}.")
-                     
-        # Assign to parsed_data AFTER the loop finishes
+                 potential_sales_line_idx = -1; potential_sales_val = None; revenue_found_nearby = False
+                 for l in range(k + 1, min(k + 4, trends_search_end_index)): # Renamed loop variable
+                     line_to_check = lines[l].strip()
+                     sales_val_match = re.match(r'^([\d,]+)$', line_to_check) # Accept commas too
+                     if sales_val_match: potential_sales_val = sales_val_match.group(1); potential_sales_line_idx = l; break
+                     elif line_to_check.lower() == 'revenue': potential_sales_val = None; break
+                 if potential_sales_val is not None and potential_sales_line_idx != -1:
+                     for m in range(potential_sales_line_idx + 1, min(potential_sales_line_idx + 4, trends_search_end_index)): # Renamed loop variable
+                         if lines[m].strip().lower() == 'revenue': revenue_found_nearby = True; break
+                 if potential_sales_val is not None and revenue_found_nearby:
+                     last_30_sales_value_str = potential_sales_val
+                     print(f"DEBUG Everbee Trends: ===> CONFIRMED Last 30 Days Sales value: {last_30_sales_value_str} (near line {k}) <===") 
+                     break # Stop searching trends section
         if last_30_sales_value_str:
-             # parsed_data['last_30_days_sales'] = safe_int(last_30_sales_value_str) # Convert to int 
-             parsed_data['last_30_days_sales'] = last_30_sales_value_str # Keep as string for now, consistent with UI update logic 
+             parsed_data['last_30_days_sales'] = last_30_sales_value_str # Store as string
              print(f"DEBUG Everbee Assign Trends: Assigned Last 30 Days Sales = {repr(parsed_data.get('last_30_days_sales'))}")
-        else:
-            print("DEBUG Everbee Trends: Did not find confirmed 'Last 30 Days Sales' pattern during search loop.")
-    else:
-        print("DEBUG Everbee Trends: 'Trends' header not found. Skipping search.")
-    # --- End Trends Search --- 
+        else: print("DEBUG Everbee Trends: Did not find confirmed 'Last 30 Days Sales' pattern.")
+    else: print("DEBUG Everbee Trends: 'Trends' header not found.")
+    # --- End Trends ---
 
-    # --- Parse Tags Section --- 
-    # (Keep this section, ensure it runs *after* table parsing)
-    tags_list = [] 
-    print("\nDEBUG Everbee: Starting Tags section parsing...")
-    # ... (Existing Tags parsing logic - may need refinement later) ...
+    # --- Tags (Keep Logic) ---
+    print("\nDEBUG Everbee Tags: Starting Tags section parsing...")
+    # ... (Existing robust Tags parsing logic remains the same) ...
+    # Including finding start ('Keyword Score' or 'Tags') and end ('More Details') markers
+    tags_list = []
+
     try:
-        # ... (Find block_start_index / block_end_index)
         block_start_index = -1
         block_end_index = num_lines
-        details_marker_index = -1 # Reset for this section
-        
-        # Find start/end markers for Tags section
-        # Use revised logic from previous attempt to find 'Keyword Score' or 'Tags' header
-        # And 'More Details' as end marker
-        # ... (Combined logic from previous edit attempt) ...
-        for i, line in enumerate(lines):
-             # Try 'Keyword Score' first
-             if re.match(r'^Keyword Score$', line, re.IGNORECASE):
-                 print(f"DEBUG Everbee Tags: Found start marker ('Keyword Score') at line {i}")
-                 block_start_index = i + 1; 
-                 # Find end marker relative to start
-                 for k in range(block_start_index, num_lines):
-                    if re.match(r'^\s*More Details\s*$', lines[k], re.IGNORECASE):
-                        print(f"DEBUG Everbee Tags: Found end marker ('More Details') at line {k}")
-                        details_marker_index = k
-                        block_end_index = k # End tag block here
-                        break
-                 break # Stop searching for start marker
-        # Fallback for simple 'Tags' header if 'Keyword Score' wasn't found
-        if block_start_index == -1: 
-             for i, line in enumerate(lines):
-                 if re.match(r'^Tags$', line, re.IGNORECASE):
-                     print(f"DEBUG Everbee Tags: Found start marker ('Tags') at line {i}")
-                     block_start_index = i + 1
-                     # Skip potential headers
-                     while block_start_index < num_lines and re.match(r'^(Volume|Competition|Keyword Score)\s*$', lines[block_start_index], re.IGNORECASE):
-                          print(f"DEBUG Everbee Tags: Skipping potential header line: '{lines[block_start_index]}'")
-                          block_start_index += 1
-                     # Find end marker relative to start
-                     for k in range(block_start_index, num_lines):
-                        if re.match(r'^\s*More Details\s*$', lines[k], re.IGNORECASE):
-                            print(f"DEBUG Everbee Tags: Found end marker ('More Details') at line {k}")
-                            details_marker_index = k
-                            block_end_index = k # End tag block here
-                            break
-                     break # Stop searching for start marker
+        details_marker_index = -1
 
-        if block_start_index == -1: print("DEBUG Everbee Tags: Block start marker not found.")
-        elif block_start_index >= block_end_index: print(f"DEBUG Everbee Tags: Block start index ({block_start_index}) not before end index ({block_end_index}).")
-        
-        # Process tag block
-        if block_start_index != -1 and block_start_index < block_end_index:
-            # ... (Existing loop to process tag_block_lines) ...
-            # Use the improved tag parsing logic from previous edits
-            tag_block_lines = lines[block_start_index:block_end_index]
-            num_tag_lines = len(tag_block_lines)
-            print(f"DEBUG Everbee Tags: Processing {num_tag_lines} lines in tag block (indices {block_start_index}-{block_end_index-1}).")
-            i = 0
-            while i < num_tag_lines:
-                # print(f"DEBUG Everbee Tags Loop: Processing line index {i} (relative): '{tag_block_lines[i]}'") # Reduce noise
-                current_tag = {}
-                lines_consumed = 0
-                try: 
-                    # 1. Tag Name (Robust Check)
-                    if i < num_tag_lines:
-                        line1 = tag_block_lines[i].strip()
-                        # Refined Check: Not just digits/commas/dots/percent AND contains letters, not High/Medium/Low
-                        if line1 and re.search(r'[a-zA-Z]', line1) and not re.match(r'^[\d,\.\s%]+$', line1) and not re.match(r'^(High|Medium|Low)$', line1, re.IGNORECASE):
-                            current_tag['name'] = line1
-                            lines_consumed += 1
-                            print(f"DEBUG Everbee Tags Loop:    ==> Matched Name: '{line1}'")
-                        else:
-                            i += 1; continue 
-                    else: break 
+        # Find Tags start/end
+        for j, line in enumerate(lines):  # Renamed loop variable
+            if re.match(r'^Keyword Score$', line, re.IGNORECASE):
+                block_start_index = j + 1
+                break
 
-                    # 2. Volume (Numeric with commas optional)
-                    vol_idx = i + lines_consumed
-                    if vol_idx < num_tag_lines:
-                        line2 = tag_block_lines[vol_idx].strip()
-                        vol_match = re.match(r'^([\d,]+)$', line2)
-                        if vol_match and vol_match.group(1):
-                            current_tag['volume'] = vol_match.group(1)
-                            lines_consumed += 1
-                            print(f"DEBUG Everbee Tags Loop:    ==> Matched Volume: '{current_tag['volume']}'")
-                        else:
-                            i += 1; continue 
-                    else: break 
-                    
-                    # 3. Competition (Numeric with commas optional)
-                    comp_idx = i + lines_consumed
-                    if comp_idx < num_tag_lines:
-                        line3 = tag_block_lines[comp_idx].strip()
-                        comp_match = re.match(r'^([\d,]+)$', line3)
-                        if comp_match and comp_match.group(1):
-                            current_tag['competition'] = comp_match.group(1)
-                            lines_consumed += 1
-                            print(f"DEBUG Everbee Tags Loop:    ==> Matched Competition: '{current_tag['competition']}'")
-                        else:
-                            i += 1; continue 
-                    else: break 
+        if block_start_index == -1:
+            for j, line in enumerate(lines):  # Renamed loop variable
+                if re.match(r'^Tags$', line, re.IGNORECASE):
+                    block_start_index = j + 1
+                    break
 
-                    # 4. Level (Optional - High/Medium/Low)
-                    level_idx = i + lines_consumed
-                    if level_idx < num_tag_lines:
-                        line4 = tag_block_lines[level_idx].strip()
-                        level_match = re.match(r'^(High|Medium|Low)$', line4, re.IGNORECASE)
-                        if level_match and level_match.group(1):
-                            current_tag['level'] = level_match.group(1)
-                            lines_consumed += 1
-                            print(f"DEBUG Everbee Tags Loop:    ==> Matched Level: '{current_tag['level']}'")
-                        else:
-                            current_tag['level'] = 'N/A' 
-                    else: 
-                        current_tag['level'] = 'N/A' # Default if end of block
-                         
-                    # 5. Score (Required - numeric, decimals, commas)
-                    score_line_index = i + lines_consumed # Index where score *should* be
-                    if score_line_index < num_tag_lines:
-                        line5 = tag_block_lines[score_line_index].strip()
-                        score_match = re.match(r'^([\d,\.]+)$', line5)
-                        if score_match and score_match.group(1):
-                            current_tag['score'] = score_match.group(1)
-                            lines_consumed += 1 
-                            print(f"DEBUG Everbee Tags Loop:    ==> Matched Score: '{current_tag['score']}'")
-                            tags_list.append(current_tag)
-                            i += lines_consumed 
-                            continue 
-                        else: 
-                             i += 1; continue 
-                    else: break 
-                    
-                except Exception as tag_loop_e:
-                     print(f"\n !!!!! ERROR Everbee: Exception inside TAGS loop at relative index {i} ('{tag_block_lines[i]}') !!!!!")
-                     print(f"      Error details: {tag_loop_e}")
-                     i += 1 # Try to advance past the problematic line
-                     continue
+        if block_start_index != -1:
+            print(f"DEBUG Everbee Tags: Found start marker around line {block_start_index-1}")
 
-            # --- Assign to parsed_data --- 
-            if tags_list:
-                parsed_data['tags_list'] = tags_list
-                print(f"DEBUG Everbee Tags: Assigned {len(tags_list)} tags to parsed_data.")
+            # Skip possible header rows
+            while (
+                block_start_index < num_lines
+                and re.match(r'^(Volume|Competition|Keyword Score)\s*$', lines[block_start_index], re.IGNORECASE)
+            ):
+                block_start_index += 1
+
+            # Find the end marker
+            for k in range(block_start_index, num_lines):  # Renamed loop variable
+                if re.match(r'^\s*More Details\s*$', lines[k], re.IGNORECASE):
+                    block_end_index = k
+                    details_marker_index = k
+                    print(f"DEBUG Everbee Tags: Found end marker at line {k}")
+                    break
+
+            if block_start_index < block_end_index:
+                # ... (Inner loop processing tag_block_lines remains the same) ...
+                tag_block_lines = lines[block_start_index:block_end_index]
+                num_tag_lines = len(tag_block_lines)
+                print(f"DEBUG Everbee Tags: Processing {num_tag_lines} lines in tag block.")
+
+                k = 0  # Renamed loop variable
+                while k < num_tag_lines:
+                    current_tag = {}
+                    lines_consumed = 0
+
+                    try:
+                        # 1. Tag Name
+                        if k < num_tag_lines:
+                            line1 = tag_block_lines[k]
+                            if (
+                                line1
+                                and re.search(r'[a-zA-Z]', line1)
+                                and not re.match(r'^[\d,\.\s%]+$', line1)
+                                and not re.match(r'^(High|Medium|Low)$', line1, re.IGNORECASE)
+                            ):
+                                current_tag['name'] = line1
+                                lines_consumed += 1
+                            else:
+                                k += 1
+                                continue  # Skip to next line if name pattern fails
+                        else:
+                            break  # End of block
+
+                        # 2. Volume
+                        vol_idx = k + lines_consumed
+                        if vol_idx < num_tag_lines:
+                            line2 = tag_block_lines[vol_idx]
+                            vol_match = re.match(r'^([\d,]+)$', line2)
+                            if vol_match:
+                                current_tag['volume'] = vol_match.group(1)
+                                lines_consumed += 1
+                            else:
+                                k += 1
+                                continue  # Skip to next line if volume pattern fails
+                        else:
+                            break  # End of block
+
+                        # 3. Competition
+                        comp_idx = k + lines_consumed
+                        if comp_idx < num_tag_lines:
+                            line3 = tag_block_lines[comp_idx]
+                            comp_match = re.match(r'^([\d,]+)$', line3)
+                            if comp_match:
+                                current_tag['competition'] = comp_match.group(1)
+                                lines_consumed += 1
+                            else:
+                                k += 1
+                                continue  # Skip to next line if competition pattern fails
+                        else:
+                            break  # End of block
+
+                        # 4. Level (Optional)
+                        level_idx = k + lines_consumed
+                        current_tag['level'] = 'N/A'  # Default
+                        if level_idx < num_tag_lines:
+                            line4 = tag_block_lines[level_idx]
+                            level_match = re.match(r'^(High|Medium|Low)$', line4, re.IGNORECASE)
+                            if level_match:
+                                current_tag['level'] = level_match.group(1)
+                                lines_consumed += 1
+                        # Level is optional
+
+                        # 5. Score
+                        score_idx = k + lines_consumed
+                        if score_idx < num_tag_lines:
+                            line5 = tag_block_lines[score_idx]
+                            # Correct the regex: Remove trailing $'
+                            score_match = re.match(r'^([\d,.]+)$', line5)
+                            if score_match:
+                                current_tag['score'] = score_match.group(1)
+                                lines_consumed += 1
+                                tags_list.append(current_tag)
+                                k += lines_consumed # Advance past the full tag entry
+                                continue # Move to the next potential tag entry
+                            else:
+                                # Score missing – assume misalignment, advance one line
+                                k += 1
+                                continue
+                        else:
+                            break  # End of block
+
+                    except Exception as tag_loop_e:
+                        print(f"ERROR Everbee Tags Loop: {tag_loop_e} at index {k}")
+                        k += 1
+                        continue
+                # End while tag lines
+
+                if tags_list:
+                    parsed_data['tags_list'] = tags_list
+                    print(f"DEBUG Everbee Tags: Assigned {len(tags_list)} tags.")
+            else:
+                print("DEBUG Everbee Tags: Block start not before end.")
         else:
-             print("DEBUG Everbee Tags: No valid tags block found or processed.")
-
+            print("DEBUG Everbee Tags: Block start marker not found.")
     except Exception as e:
-        print(f"ERROR Everbee: EXCEPTION during Tags parsing: {e}")
-        st.error(f"Error parsing tags section: {e}")
-        notes.append(f"\n--- Everbee Tags ---\nError parsing tags: {e}")
+        print(f"ERROR Everbee Tags: EXCEPTION during parsing: {e}")
+    # --- End Tags ---
 
-    # --- Parse More Details Section --- 
-    # (Keep this section, ensure it runs *after* table parsing)
-    print("\nDEBUG Everbee: Starting More Details section parsing...")
-    # Use the details_marker_index found during Tag parsing if available
-    # ... (Existing 'More Details' parsing logic) ...
-    details_start_index = details_marker_index + 1 if details_marker_index != -1 else -1
-    if details_start_index == 0: details_start_index = -1 # Correct if marker was at line 0
-
-    if details_start_index == -1: # Fallback search if not found via Tags section
-        for i, line in enumerate(lines):
-             if re.match(r'^\s*More Details\s*$', line, re.IGNORECASE):
-                 details_start_index = i + 1
-                 print(f"DEBUG Everbee Details: Found 'More Details' header via fallback at line {i}. Start index {details_start_index}")
-                 break
-
+    # --- More Details (Keep Logic, ensure respects listing_type if already set) ---
+    print("\\nDEBUG Everbee More Details: Starting More Details section parsing...")
+    # ... (Existing More Details parsing logic remains the same) ...
+    # Uses details_marker_index from Tags section if found, otherwise searches again
+    details_start_index = details_marker_index + 1 if details_marker_index != -1 and details_marker_index + 1 < num_lines else -1
+    if details_start_index == -1: # Fallback search
+        for j, line in enumerate(lines): # Renamed loop variable
+             if re.match(r'^\s*More Details\s*$', line, re.IGNORECASE): details_start_index = j + 1; print(f"DEBUG Everbee Details: Found header via fallback at line {j}"); break
     if details_start_index != -1 and details_start_index < num_lines:
-        # ... (Existing logic to parse details_list) ...
         details_list = []
-        known_keys = ["When Made", "Listing Type", "Customizable", "Craft Supply", 
-                      "Personalized", "Auto Renew", "Has variations", 
-                      "Placements of Listing Shops", "Title character count", 
-                      "# of tags", "Who Made"]
+        known_keys = ["When Made", "Listing Type", "Customizable", "Craft Supply", "Personalized", "Auto Renew", "Has variations", "Placements of Listing Shops", "Title character count", "# of tags", "Who Made"]
         key_regex_map = {key: re.compile(r'^\s*' + re.escape(key) + r'\s*$', re.IGNORECASE) for key in known_keys}
-            
-        current_key = None
-        current_value_lines = []
+        current_key = None; current_value_lines = []
         print(f"DEBUG Everbee Details: Processing details from line {details_start_index}...")
-
-        for i in range(details_start_index, num_lines):
-            line = lines[i].strip() 
-            # print(f"DEBUG Everbee Details Loop: Processing line {i}: '{line}'") # Reduce noise
-            if not line: continue 
-
-            is_known_key = False
+        for j in range(details_start_index, num_lines): # Renamed loop variable
+            line = lines[j].strip()
+            if not line:
+                continue
+            # Ensure initialization happens at the start of each outer loop iteration
+            is_known_key = False 
             matched_key = None
             for key, key_regex in key_regex_map.items():
                 if key_regex.match(line):
-                     is_known_key = True
-                     matched_key = key
-                     # print(f"DEBUG Everbee Details Loop:  -> Line IS a known key: '{matched_key}'") # Reduce noise
-                     break
-                    
+                    is_known_key = True
+                    matched_key = key
+                    break
             if is_known_key:
                 if current_key and current_value_lines:
                     value = ' '.join(current_value_lines).strip()
-                    # print(f"DEBUG Everbee Details Loop:  -> Processing previous key '{current_key}'. Joined value: '{value}'") # Reduce noise
-                    # Clean 'Who Made' specifically
-                    if current_key == 'Who Made' and isinstance(value, str):
-                        value = re.sub(r'\s+\d+$', '', value).strip() 
-                        # print(f"DEBUG Everbee Details Loop:    Cleaned 'Who Made' value: '{value}'") # Reduce noise
+                    if current_key == 'Who Made' and isinstance(value, str): value = re.sub(r'\s+\d+$', '', value).strip()
                     details_list.append({'key': current_key, 'value': value or 'Unknown'})
-                    # Assign listing type directly to parsed_data IF NOT ALREADY SET BY TABLE PARSING
+                    # Assign listing type ONLY IF NOT ALREADY FOUND
                     if current_key == 'Listing Type' and 'listing_type' not in parsed_data:
                          parsed_data['listing_type'] = value or 'Unknown'
-                         print(f"DEBUG Everbee Details Loop:    Updated listing_type from Details: '{parsed_data['listing_type']}'")
-                    
-                current_key = matched_key
-                current_value_lines = []
-            elif current_key:
-                 current_value_lines.append(line)
-            # else: # Skip lines before first key
-                # print(f"DEBUG Everbee Details Loop:  -> Skipping line before first key found.") # Reduce noise
-
-        # Process the last key found
-        if current_key and current_value_lines:
+                         print(f"DEBUG Everbee Details Assign: Assigned listing_type='{parsed_data['listing_type']}' from Details section.")
+                current_key = matched_key; current_value_lines = []
+            elif current_key: current_value_lines.append(line)
+        if current_key and current_value_lines: # Process last key
             value = ' '.join(current_value_lines).strip()
-            # print(f"DEBUG Everbee Details: Processing FINAL key '{current_key}'. Joined value: '{value}'") # Reduce noise
-            if current_key == 'Who Made' and isinstance(value, str):
-                value = re.sub(r'\s+\d+$', '', value).strip()
-                # print(f"DEBUG Everbee Details:    Cleaned 'Who Made' value (final): '{value}'") # Reduce noise
+            if current_key == 'Who Made' and isinstance(value, str): value = re.sub(r'\s+\d+$', '', value).strip()
             details_list.append({'key': current_key, 'value': value or 'Unknown'})
-            # Assign listing type directly to parsed_data IF NOT ALREADY SET BY TABLE PARSING
             if current_key == 'Listing Type' and 'listing_type' not in parsed_data:
-                parsed_data['listing_type'] = value or 'Unknown'
-                print(f"DEBUG Everbee Details: Updated listing_type from Details (final): '{parsed_data['listing_type']}'")
-
+                 parsed_data['listing_type'] = value or 'Unknown'
+                 print(f"DEBUG Everbee Details Assign: Assigned listing_type='{parsed_data['listing_type']}' from Details section (final key).")
         if details_list:
-             # Only append notes, don't assign directly to parsed_data['more_details_list'] unless needed
-             notes.append("\n--- Everbee More Details ---")
-             for detail_dict in details_list:
-                 notes.append(f"- {detail_dict['key']}: {detail_dict['value']}")
+             notes.append("\\n--- Everbee More Details ---")
+             for detail_dict in details_list: notes.append(f"- {detail_dict['key']}: {detail_dict['value']}")
              print(f"DEBUG Everbee Details: Added {len(details_list)} items to notes.")
-        else:
-             print("DEBUG Everbee Details: No details parsed from 'More Details' section.")
-    else:
-        print("DEBUG Everbee Details: 'More Details' header not found. Skipping details parsing.")
+        else: print("DEBUG Everbee Details: No details parsed.")
+    else: print("DEBUG Everbee Details: 'More Details' header not found.")
+    # --- End More Details ---
 
-    # Assign compiled notes
-    parsed_data['notes'] = "\n".join(notes)
-    print(f"DEBUG Everbee: Final notes compiled ({len(notes)} lines).")
-
-    # --- Final Pass: Search for Shop Age Overall if not found by heuristic ---
+    # --- Step 5: Final Fallback Pass for Shop Age Overall ---
+    # Only run if 'shop_age_overall' wasn't found via label matching
     if 'shop_age_overall' not in parsed_data:
-        print("\nDEBUG Everbee Final Pass: Searching for Shop Age Overall...")
-        listing_age_val = parsed_data.get('listing_age') # Get listing age found earlier
+        print("\\nDEBUG Everbee Final Pass: Searching for Shop Age Overall fallback...")
+        listing_age_val = parsed_data.get('listing_age') # Get listing age if found
+        found_distinct_age = None
+        age_pattern = r'^(\d+\s+(?:Mo\.?|months?))$' # Regex for age
         for i, line in enumerate(lines):
-            line_stripped = line.strip()
-            age_match = re.match(r'^(\d+\s+(?:Mo\.?|months?))$', line_stripped, re.IGNORECASE)
+            age_match = re.match(age_pattern, line.strip(), re.IGNORECASE)
             if age_match:
                 potential_shop_age = age_match.group(1)
-                # Check if it's different from listing age (if listing age was found)
-                if potential_shop_age and potential_shop_age != listing_age_val:
-                    parsed_data['shop_age_overall'] = potential_shop_age
-                    print(f"DEBUG Everbee Final Pass: Found distinct Shop Age Overall '{potential_shop_age}' at line {i}")
-                    break # Stop after finding the first distinct match
-                # else:
-                    # print(f"DEBUG Everbee Final Pass: Found age '{potential_shop_age}' at line {i}, but it matches listing age or was empty. Skipping.")
-        if 'shop_age_overall' not in parsed_data:
-             print("DEBUG Everbee Final Pass: Shop Age Overall not found anywhere in text.")
+                # Normalize for comparison (e.g., "12 months" vs "12 Mo.")
+                norm_potential = potential_shop_age.lower().replace('months', 'mo').replace('.', '')
+                norm_listing = str(listing_age_val).lower().replace('months', 'mo').replace('.', '') if listing_age_val else None
+                
+                if norm_listing is None or norm_potential != norm_listing:
+                    found_distinct_age = potential_shop_age # Store the first distinct age found
+                    print(f"DEBUG Everbee Final Pass: Found distinct Shop Age Overall '{found_distinct_age}' at line {i}")
+                    break # Stop after finding the first distinct one
+
+        if found_distinct_age:
+             parsed_data['shop_age_overall'] = found_distinct_age
+        else:
+             print("DEBUG Everbee Final Pass: Shop Age Overall not found or matched listing age.")
     else:
-         print("\nDEBUG Everbee Final Pass: Shop Age Overall already found by heuristic. Skipping final pass.")
+        print("\\nDEBUG Everbee Final Pass: Shop Age Overall already found via label matching. Skipping fallback.")
+    # --- End Step 5 ---
 
-    # Final check before returning
-    print(f"\nDEBUG Everbee: Final parsed_data keys: {list(parsed_data.keys())}")
-    print("--- DEBUG Everbee: Finished parse_everbee_text_content ---")
-
+    # Final check and return
+    parsed_data['notes'] = "\\n".join(notes)
+    print(f"\\nDEBUG Everbee: Final parsed_data keys: {list(parsed_data.keys())}")
+    print("--- DEBUG Everbee: Finished parse_everbee_text_content (Generalized Approach) ---")
     return parsed_data
 
 # --- ERANK Analysis Helper Functions ---
