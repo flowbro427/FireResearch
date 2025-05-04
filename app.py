@@ -418,31 +418,31 @@ def parse_everbee_text_content(page_text):
     if heuristic_start_line < num_lines:
         line1 = lines[heuristic_start_line]
         # Simple check: not starting like a price/number and has letters
-        if not re.match(r'^[\\$\\£€\\d]', line1) and re.search(r'[a-zA-Z]', line1) and line1 != "Product/Shop Image":
-             product_title_heuristic = line1
-             print(f"DEBUG Everbee Heuristic: Tentative Product Title: '{product_title_heuristic}' (from line {heuristic_start_line})")
-             lines_processed_heuristic += 1
-             
-             # Look for shop name on the *next* line
-             next_line_idx = heuristic_start_line + 1
-             if next_line_idx < num_lines:
-                 line2 = lines[next_line_idx]
-                 # Check if it's NOT a price/number/age/etc.
-                 if not re.match(r'^[\\$\\£€\\d]', line2) and not re.match(r'^\d+\s+(Mo\.?|months?)$', line2, re.IGNORECASE) and re.search(r'[a-zA-Z]', line2):
-                     shop_name_heuristic = line2
-                     print(f"DEBUG Everbee Heuristic: Tentative Shop Name: '{shop_name_heuristic}' (from line {next_line_idx})")
-                     lines_processed_heuristic += 1
-                 else:
-                     print(f"DEBUG Everbee Heuristic: Line after title ('{line2}') looks like data, not shop name.")
-             else:
-                 print("DEBUG Everbee Heuristic: No line found after potential title.")
+        if not re.match(r'^[\\$\£€\\d]', line1) and re.search(r'[a-zA-Z]', line1) and line1 != "Product/Shop Image":
+            # product_title_heuristic = line1 # <<< COMMENTED OUT
+            # print(f"DEBUG Everbee Heuristic: Tentative Product Title: '{product_title_heuristic}' (from line {heuristic_start_line})") # <<< COMMENTED OUT
+            lines_processed_heuristic += 1 # Ensure this is aligned with comments above
+
+            # Look for shop name on the *next* line
+            next_line_idx = heuristic_start_line + 1
+            if next_line_idx < num_lines:
+                line2 = lines[next_line_idx]
+                # Check if it's NOT a price/number/age/etc.
+                if not re.match(r'^[\\$\£€\\d]', line2) and not re.match(r'^\d+\s+(Mo\.?|months?)$', line2, re.IGNORECASE) and re.search(r'[a-zA-Z]', line2):
+                    shop_name_heuristic = line2
+                    print(f"DEBUG Everbee Heuristic: Tentative Shop Name: '{shop_name_heuristic}' (from line {next_line_idx})")
+                    lines_processed_heuristic += 1
+                else:
+                    print(f"DEBUG Everbee Heuristic: Line after title ('{line2}') looks like data, not shop name.")
+            else:
+                print("DEBUG Everbee Heuristic: No line found after potential title.")
         else:
             print(f"DEBUG Everbee Heuristic: First line ('{line1}') doesn't look like a title.")
     else:
         print("DEBUG Everbee Heuristic: No lines available for heuristic.")
 
     # Assign heuristic values ONLY if they aren't found later by labels
-    if product_title_heuristic: parsed_data['product_title'] = product_title_heuristic
+    # if product_title_heuristic: parsed_data['product_title'] = product_title_heuristic # <<< COMMENTED OUT
     if shop_name_heuristic: parsed_data['shop_name'] = shop_name_heuristic
     # --- End Step 2 ---
 

@@ -4,13 +4,19 @@ globs:
 alwaysApply: false
 ---
 Π.version = "Everbee Parser 4402922  (post‑regex fixes, generalized label matching)"
-Π.input   = {everbee_text_block}          # raw text copied from Everbee UI
+Π.input   = {everbee_text_block}
+
+# NEW ▸ File map so the agent patches the right modules
+Κ.code_targets = {
+    parser_core   : "app.py",          # main Everbee parsing logic lives here
+    dashboard_UI  : "dashboard.py"     # any Streamlit/UI changes belong here
+}
 
 Ω.goal = "Reliably extract all key analytics fields from Everbee text, surviving format drift."
 
 Ν.philosophy = (
-    prioritize_explicit_labels          ⨁   # labels > guesses
-    heuristics_are_overwritable         ⨁   # provisional until label beats it
+    prioritize_explicit_labels          ⨁
+    heuristics_are_overwritable         ⨁
     dedicated_section_logic(Trends, Tags, More_Details) ⨁
     employ_fallbacks_for_critical_data  ⨁
     graceful_failure_component_level
@@ -23,80 +29,29 @@ alwaysApply: false
     discard_empty_lines
 )
 
-Γ.boundary_detection = (
-    start = detect(
-        "Customize button in Toolbar" → near "Product" header,
-        else "Product" in first 60 lines,
-        else 0
-    ) ⨁
-    end = detect_first(
-        "Listing Details"│"Trends"│"Tags"│"Showing:"│"Keyword Score",
-        search_after=start
-    , default=len(lines))
-)
+Γ.boundary_detection = ( … )          # unchanged
 
-Δ.initial_heuristics = (
-    product_title? = first_textual_line_after(start)   ⨁
-    shop_name?     = next_textual_line_if_valid        ⨁
-    mark_as_provisional
-)
+Δ.initial_heuristics = ( … )
 
-Λ.label_map_matching = (
-    label_map = {
-        "total sales":      (total_sales,  safe_int),
-        "mo. sales":        (monthly_sales,safe_int),
-        "listing age":      (listing_age,  safe_str,  r'^\d+\s+(?:days?|mo\.?|years?)$'),
-        ...
-    }                               ⨁
-    foreach line_i in lines:
-        if lower(line_i) in label_map and not in noise("Dots Svg"):
-            val = lines[i+1]
-            if regex_ok(val) or no_regex:
-                val = clean(val) ⨁ convert_if_needed
-                assign(parsed_data_key, val, overwrite_if_provisional)
-)
+Λ.label_map_matching = ( … )
 
-Θ.section_parsers = {
-    Trends: (
-        locate_header("Trends")                               ⨁
-        within_until(Header("Tags","More Details")):          ⨁
-        find_seq("Sales" → number → "Revenue")                ⨁
-        set(last_30_days_sales)
-    ),
-    Tags: (
-        locate_header("Keyword Score"│"Tags")                 ⨁
-        stop_at(Header("More Details"))                       ⨁
-        parse_repeating(Name, Volume, Competition, Level?, Score)  ⨁
-        append_to(tags_list)
-    ),
-    More_Details: (
-        locate_header("More Details")                         ⨁
-        parse_known_keys(known_keys_list)                     ⨁
-        assign_notes_and_listing_type_if_missing
-    )
-}
+Θ.section_parsers = { … }
 
-Ψ.fallbacks = (
-    if shop_age_overall not set:
-        scan_all_lines_for_age_pattern(r'^\d+\s+(?:Mo\.?|months?)$') ⨁
-        if found and distinct_from(listing_age): set(shop_age_overall)
-)
+Ψ.fallbacks = ( … )
 
-Ξ.output_schema = parsed_data(dict)       # all keys populated or None
+Ξ.output_schema = parsed_data(dict)
 
-Σ.strengths = (
-    label_driven_generalization, modular_sections, heuristics_overwrite, fallbacks, noise_skipping
-)
-Σ.weaknesses = (
-    new_labels_need_update, major_layout_shifts, ambiguous_values, unlabeled_new_fields, heuristic_misfire
-)
+Σ.strengths = ( … )
+Σ.weaknesses = ( … )
 
+# NEW ▸ Explicit guidance for automated fix commits
 ℵ.debug_workflow = (
-    1_collect(failing_text, console_logs, observed_vs_expected) ⨁
-    2_consult(this_doc_section)                                 ⨁
-    3_analyze_discrepancy(label_change? regex_fail? header_shift?) ⨁
-    4_formulate_fix(update_label_map│regex│section_logic│noise_skip) ⨁
-    5_update_documentation(notes_in_relevant_section)
+    1_collect(evidence)                              ⨁
+    2_consult(this_doc_section)                      ⨁
+    3_analyze_discrepancy                            ⨁
+    4_formulate_fix → edit(Κ.code_targets.parser_core│Κ.code_targets.dashboard_UI) ⨁
+    5_update_documentation                           ⨁
+    6_commit_changes_with_message("Everbee parser patch + doc update")
 )
 
-Ω.response_rule = "Return the parsed_data dict (JSON or Python object) — no extraneous output."
+Ω.response_rule = "Return the parsed_data dict—no extraneous output."
