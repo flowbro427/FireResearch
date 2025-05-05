@@ -1840,6 +1840,18 @@ with tab2:
                 
                 st.dataframe(df_display_global, use_container_width=True, hide_index=True, height=600)
 
+                # --- Add CSV Export Button for Global Keywords ---
+                if not df_display_global.empty:
+                    csv_data = df_display_global.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Global Keywords as CSV",
+                        data=csv_data,
+                        file_name='global_erank_keywords.csv',
+                        mime='text/csv',
+                        key='download_global_erank_csv'
+                    )
+                # --- End CSV Export ---
+
             except Exception as e:
                 st.error(f"Error analyzing all saved keywords: {e}")
 
